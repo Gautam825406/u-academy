@@ -7,9 +7,9 @@ import { FEATURES, FEATURE_KEYS, type Profile } from "@/lib/types";
 import InstallAppButton from "@/components/InstallAppButton";
 import "./app-shell.css";
 import {
-  BarChart3, Bell, BookOpen, CalendarCheck, ClipboardList, FileText,
+  BarChart3, Bell, BookOpen, CalendarCheck, ChevronDown, ClipboardList, FileText,
   FolderOpen, Home, LayoutGrid, Megaphone, Menu, MessageCircleQuestion,
-  MoreHorizontal, Play, ShieldCheck, TrendingUp, User, Users, Video, Wallet, X,
+  MoreHorizontal, Play, Search, ShieldCheck, TrendingUp, User, Users, Video, Wallet, X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -1224,17 +1224,19 @@ export default function DashboardPage() {
             {demoError && <p className="mt-1 text-xs font-bold text-red-700">{demoError}</p>}
           </div>
         </div><div className="mt-3 flex gap-2"><button className="btn-brand !py-2.5 text-sm">Save changes</button><button type="button" onClick={() => { setEditingBatch(null); setEditForm({}); setThumbError(""); }} className="rounded-xl border px-4 py-2.5 text-sm font-bold">Cancel</button></div></form>}
-        {!isStaff && <div className="card mt-3">
-          <div className="flex rounded-full bg-slate-100 p-1" role="tablist" aria-label="Batches">
+        {!isStaff && <div className="mt-3">
+          <h2 className="text-xl font-extrabold text-ink">Batches</h2>
+          <p className="mt-0.5 text-sm text-slate-500">Browse batches to enrol in — or continue learning in the ones you own.</p>
+          <div className="mt-3 flex rounded-full bg-slate-100 p-1" role="tablist" aria-label="Batches">
             {(["all", "mine"] as const).map(tb => <button key={tb} role="tab" aria-selected={batchTab === tb} onClick={() => setBatchTab(tb)} className={`app-press min-h-[44px] flex-1 rounded-full px-4 py-2 text-sm font-extrabold ${batchTab === tb ? "bg-brand text-white shadow" : "text-slate-600"}`}>{tb === "all" ? `All Batches (${filteredCatalog.length})` : `My Batches (${myBatchesList.length})`}</button>)}
           </div>
-          {batchTab === "all" && <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <input className="input" placeholder="Search batches by name, subject or class…" value={batchSearch} onChange={e => setBatchSearch(e.target.value)} />
-            <select className="input" value={batchClass} onChange={e => setBatchClass(e.target.value)}><option value="">All classes</option>{classOptions.map(c => <option key={c} value={c}>{c}</option>)}</select>
+          {batchTab === "all" && <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <div className="relative flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input className="input !pl-9" placeholder="Search batches by name, subject or class…" value={batchSearch} onChange={e => setBatchSearch(e.target.value)} /></div>
+            <select className="input sm:w-44" value={batchClass} onChange={e => setBatchClass(e.target.value)}><option value="">All classes</option>{classOptions.map(c => <option key={c} value={c}>{c}</option>)}</select>
           </div>}
           <p className="mt-2 text-xs text-slate-500">{batchTab === "all" ? "Every batch open for enrolment. Buy a plan to start learning — a batch only moves to My Batches after Cashfree confirms your payment." : "Only batches you are enrolled in. Access stays active while your plan is valid; renew an expired plan from its card."}</p>
         </div>}
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div className="mt-4 grid items-stretch gap-4 sm:grid-cols-2 lg:gap-5">
           {isStaff && batches.length === 0 && empty("No batches yet — create your first batch above.")}
           {!isStaff && batchTab === "mine" && myBatchesList.length === 0 && <div className="card text-sm text-slate-600 sm:col-span-2">You are not enrolled in any batch yet. <button onClick={() => setBatchTab("all")} className="font-bold text-brand-dark underline">Browse all batches →</button></div>}
           {!isStaff && batchTab === "all" && filteredCatalog.length === 0 && <div className="card text-sm text-slate-600 sm:col-span-2">No batches match that search. Try a different name, subject or class.</div>}
@@ -1242,21 +1244,37 @@ export default function DashboardPage() {
             const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === s(b, "id"));
             const thumb = s(b, "thumbnail_url");
             const initials = s(b, "name").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U+";
-            return <div key={s(b, "id")} className="app-press overflow-hidden rounded-3xl border bg-white shadow-sm">
-              {thumb ? <img src={thumb} alt={`${s(b, "name")} thumbnail`} className="aspect-video w-full object-cover" /> : <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-brand to-brand-dark"><span className="text-4xl font-extrabold tracking-wide text-white">{initials}</span></div>}
-              <div className="p-4"><b className="text-base">{s(b, "name")}</b>
-              <p className="mt-1 flex flex-wrap gap-1">{[s(b, "class_label"), s(b, "board"), s(b, "subject")].filter(Boolean).map(c => <span key={c} className="rounded-full bg-brand-tint px-2 py-0.5 text-[11px] font-extrabold text-brand-dark">{c}</span>)}<span className={`rounded-full px-2 py-0.5 text-[11px] font-extrabold ${(s(b, "status") || "active") === "active" ? "bg-brand-tint text-brand-dark" : "bg-slate-200 text-slate-600"}`}>{s(b, "status") || "active"}</span></p>
-              {s(b, "description") && <p className={`mt-2 text-sm text-slate-600 ${expandedBatch === s(b, "id") ? "" : "line-clamp-2"}`}>{s(b, "description")}</p>}
-              <p className="mt-2 text-xs text-slate-500">Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · <b className="text-sm text-ink">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</b></p>
-              {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-extrabold text-amber-800"><FileText className="h-3.5 w-3.5" />Free Demo Lecture — View Demo PDF ↗</a>}
-              {!isStaff && <div className="mt-2"><button onClick={() => setExpandedBatch(expandedBatch === s(b, "id") ? "" : s(b, "id"))} className="text-xs font-bold text-brand-dark underline">{expandedBatch === s(b, "id") ? "Hide details ▲" : "View details ▾"}</button>
-                {expandedBatch === s(b, "id") && <div className="mt-2 space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
-                  <p><b>Teacher:</b> {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · <b>Class:</b> {s(b, "class_label")} · <b>Board:</b> {s(b, "board") || "—"} · <b>Subject:</b> {s(b, "subject") || "—"}</p>
-                  <p><b>Enrolled:</b> {enrolled.length}{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : " (unlimited seats)"} · <b>Price:</b> {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"} · <b>Status:</b> {s(b, "status") || "active"}</p>
-                  {(() => { const pls = (data.batch_plans || []).filter(x => s(x, "batch_id") === s(b, "id") && String(x.is_active) !== "false"); if (!pls.length) return <p>No plans yet — the batch price above applies.</p>; return <div><b>Plans:</b><ul className="mt-1 space-y-1">{pls.map(pl => <li key={s(pl, "id")}>· {s(pl, "name")} — ₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="text-slate-400 line-through"> ₹{String(pl.mrp)}</span> : ""} · {planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</li>)}</ul></div>; })()}
+            const teacherName = s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "";
+            const batchStatus = s(b, "status") || "active";
+            return <div key={s(b, "id")} className="app-press flex flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-sm">
+              <div className="relative">
+                {thumb ? <img src={thumb} alt={`${s(b, "name")} thumbnail`} className="aspect-video w-full object-cover" /> : <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-brand to-brand-dark"><span className="text-4xl font-extrabold tracking-wide text-white">{initials}</span></div>}
+                <span className={`absolute left-3 top-3 rounded-full px-2.5 py-1 text-[11px] font-extrabold capitalize shadow-sm ${batchStatus === "active" ? "bg-white/95 text-brand-dark" : "bg-slate-900/70 text-white"}`}>{batchStatus}</span>
+                <span className="absolute right-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-xs font-extrabold text-ink shadow-sm">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</span>
+              </div>
+              <div className="flex flex-1 flex-col p-4 sm:p-5">
+                <h3 className="text-base font-extrabold leading-snug text-ink">{s(b, "name")}</h3>
+                <p className="mt-1 text-xs font-semibold text-slate-500">{[s(b, "class_label"), s(b, "board"), s(b, "subject")].filter(Boolean).join(" · ") || "—"}</p>
+                <p className="mt-2.5 flex items-center gap-2 text-sm text-slate-700">{teacherName ? <><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-tint text-xs font-extrabold text-brand-dark">{teacherName.trim().charAt(0).toUpperCase()}</span><span className="min-w-0 truncate font-semibold">{teacherName}</span></> : <span className="text-slate-400">Teacher not assigned yet</span>}</p>
+                {s(b, "description") && <p className={`mt-2 text-sm leading-relaxed text-slate-600 ${expandedBatch === s(b, "id") ? "" : "line-clamp-2"}`}>{s(b, "description")}</p>}
+                <p className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Users className="h-3.5 w-3.5 shrink-0" />{enrolled.length} enrolled{s(b, "capacity") ? ` · ${s(b, "capacity")} seats` : " · Unlimited seats"}</p>
+                {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex w-fit items-center gap-1.5 text-xs font-bold text-brand-dark hover:underline"><FileText className="h-3.5 w-3.5" />Free demo lecture (PDF)</a>}
+              {!isStaff && <div className="mt-3">
+                <button onClick={() => setExpandedBatch(expandedBatch === s(b, "id") ? "" : s(b, "id"))} className="app-press inline-flex items-center gap-1 text-xs font-bold text-brand-dark">{expandedBatch === s(b, "id") ? "Hide details" : "View details"}<ChevronDown className={`h-3.5 w-3.5 transition-transform ${expandedBatch === s(b, "id") ? "rotate-180" : ""}`} /></button>
+                {expandedBatch === s(b, "id") && <div className="mt-2 rounded-2xl bg-slate-50 px-3 py-1 text-xs text-slate-600">
+                  <dl className="divide-y divide-slate-100">
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Teacher</dt><dd className="text-right font-semibold text-slate-700">{teacherName || "—"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Class</dt><dd className="text-right font-semibold text-slate-700">{s(b, "class_label") || "—"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Board</dt><dd className="text-right font-semibold text-slate-700">{s(b, "board") || "—"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Subject</dt><dd className="text-right font-semibold text-slate-700">{s(b, "subject") || "—"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Enrolled</dt><dd className="text-right font-semibold text-slate-700">{enrolled.length}{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : " · Unlimited seats"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Price</dt><dd className="text-right font-semibold text-slate-700">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</dd></div>
+                    <div className="flex items-center justify-between gap-3 py-1.5"><dt className="font-bold text-slate-500">Status</dt><dd className="text-right font-semibold capitalize text-slate-700">{batchStatus}</dd></div>
+                  </dl>
+                  {(() => { const pls = (data.batch_plans || []).filter(x => s(x, "batch_id") === s(b, "id") && String(x.is_active) !== "false"); if (!pls.length) return <p className="border-t border-slate-100 py-2">No plans yet — the batch price above applies.</p>; return <div className="border-t border-slate-100 py-2"><p className="font-bold text-slate-500">Plans</p><ul className="mt-1.5 space-y-1.5">{pls.map(pl => <li key={s(pl, "id")} className="flex items-baseline justify-between gap-3"><span className="font-semibold text-slate-700">{s(pl, "name")}<span className="block font-normal text-slate-500">{planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</span></span><span className="shrink-0 font-extrabold text-ink">₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="ml-1 text-xs font-normal text-slate-400 line-through">₹{String(pl.mrp)}</span> : ""}</span></li>)}</ul></div>; })()}
                 </div>}
               </div>}
-              {!isStaff && (() => {
+              {!isStaff && <div className="mt-auto pt-4">{(() => {
                 const bid = s(b, "id");
                 const mine = enrolled.some(e => s(e, "student_id") === effectiveId);
                 const full = s(b, "capacity") && enrolled.length >= n(b, "capacity");
@@ -1276,17 +1294,16 @@ export default function DashboardPage() {
                   const prog = batchProgress(bid);
                   const expired = !!(mySub && subStatus(mySub) === "expired");
                   const boughtPlan = (data.batch_plans || []).find(x => s(x, "id") === s(mySub, "plan_id") || s(x, "id") === s(enr, "plan_id"));
-                  return <div className="mt-2 space-y-2">
-                    <p className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-600">
-                      <span className={`rounded-full px-2 py-1 ${expired ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{expired ? "Expired" : "✓ Active"}</span>
-                      <span>Enrolled {enr && s(enr, "created_at") ? new Date(s(enr, "created_at")).toLocaleDateString() : "—"}</span>
-                      {mySub && <span>{s(mySub, "plan_name") || "Plan"} · Valid until {s(mySub, "valid_until") || "—"}</span>}
-                      {boughtPlan && <span>· {planValidity(boughtPlan)}</span>}
-                    </p>
-                    {prog ? <div><p className="text-xs font-bold text-slate-600">Learning progress — {prog.done} of {prog.total} tasks done ({Math.round(prog.done / prog.total * 100)}%)</p><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.round(prog.done / prog.total * 100)}%` }} /></div><p className="mt-1 text-[11px] text-slate-500">Tasks = assignments submitted + tests attempted in this batch.</p></div> : <p className="text-xs text-slate-500">Progress tracking coming soon — complete assignments and tests in this batch and your progress will show here.</p>}
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={() => { setLearnBatch(bid); openSection("lectures"); }} disabled={!activeBatchIds.has(bid)} className="btn-brand !py-2 text-xs">Continue Learning →</button>
-                      {expired && <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand !py-2 text-xs">{payBusy === bid ? "Starting payment…" : `Renew — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree`}</button>}
+                  return <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-extrabold ${expired ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{expired ? "Expired" : "✓ Active"}</span>
+                      <span className="text-xs text-slate-500">Enrolled {enr && s(enr, "created_at") ? new Date(s(enr, "created_at")).toLocaleDateString() : "—"}</span>
+                    </div>
+                    {mySub && <p className="text-xs text-slate-500">{s(mySub, "plan_name") || "Plan"} · Valid until {s(mySub, "valid_until") || "—"}{boughtPlan ? ` · ${planValidity(boughtPlan)}` : ""}</p>}
+                    {prog ? <div><div className="flex items-baseline justify-between gap-2"><p className="text-xs font-bold text-slate-600">Learning progress</p><p className="text-xs font-extrabold text-brand-dark">{prog.done} of {prog.total} tasks · {Math.round(prog.done / prog.total * 100)}%</p></div><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.round(prog.done / prog.total * 100)}%` }} /></div><p className="mt-1 text-[11px] text-slate-500">Tasks = assignments submitted + tests attempted in this batch.</p></div> : <p className="text-xs text-slate-500">Progress tracking coming soon — complete assignments and tests in this batch and your progress will show here.</p>}
+                    <div className="flex gap-2">
+                      <button onClick={() => { setLearnBatch(bid); openSection("lectures"); }} disabled={!activeBatchIds.has(bid)} className="btn-brand app-press flex-1 !py-2.5 text-xs">Continue Learning →</button>
+                      {expired && <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="app-press rounded-xl border-2 border-brand px-3 py-2.5 text-xs font-extrabold text-brand-dark">{payBusy === bid ? "Starting payment…" : `Renew — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree`}</button>}
                     </div>
                   </div>;
                 }
@@ -1295,19 +1312,24 @@ export default function DashboardPage() {
                 // existed) fell through to the "Pay again" button even
                 // though the student was already enrolled. An enrolment
                 // row is the source of truth — it means enrolled.
-                if (mine && !mySub) return <div className="mt-2"><span className="inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span></div>;
-                if (mine && mySub && subStatus(mySub) === "active") return <div className="mt-2"><span className="inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled — {s(mySub, "plan_name") || "Batch"} · Valid until {s(mySub, "valid_until") || "—"}</span></div>;
-                if (mine && mySub && subStatus(mySub) === "expired") return <div className="mt-2"><span className="inline-block rounded-full bg-red-100 px-3 py-1.5 text-xs font-extrabold text-red-700">Subscription expired {s(mySub, "valid_until")}</span><button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand ml-2 !py-2 text-xs">Renew — Pay ₹{sel ? String(sel.price) : String(b.price)} via Cashfree</button></div>;
-                if (full) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Batch full</span>;
-                if (closed) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Enrolment {s(b, "status")}</span>;
-                return <div className="mt-2">
-                  {plans.length > 0 ? <div className="grid gap-2 sm:grid-cols-3">{plans.map(pl => { const pid = s(pl, "id"); const disc = planDiscount(pl); return <button key={pid} onClick={() => setSelPlan({ ...selPlan, [bid]: pid })} className={`rounded-2xl border-2 p-3 text-left ${selId === pid ? "border-brand bg-brand-tint" : "border-slate-200 bg-white"}`}><b className="text-sm">{s(pl, "name")}</b><span className="mt-1 block text-lg font-extrabold">₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="ml-1 text-sm font-normal text-slate-400 line-through">₹{String(pl.mrp)}</span> : ""}</span>{disc > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-800">{disc}% OFF</span>}<span className="mt-1 block text-xs text-slate-500">{planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</span></button>; })}</div> : <p className="text-xs text-slate-500">No plans yet for this batch — batch price applies.</p>}
-                  <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand mt-2 !py-2 text-xs">{payBusy === bid ? "Starting payment…" : (sel ? n(sel, "price") > 0 : n(b, "price") > 0) ? `Enroll — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree` : "Enroll free"}</button>
+                if (mine && !mySub) return <p><span className="inline-flex items-center gap-1 rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span></p>;
+                if (mine && mySub && subStatus(mySub) === "active") return <div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span><span className="text-xs text-slate-500">{s(mySub, "plan_name") || "Batch"} · Valid until {s(mySub, "valid_until") || "—"}</span></div>;
+                if (mine && mySub && subStatus(mySub) === "expired") return <div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-3 py-1.5 text-xs font-extrabold text-red-700">Subscription expired {s(mySub, "valid_until")}</span><button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="app-press rounded-xl border-2 border-brand px-3 py-2 text-xs font-extrabold text-brand-dark">Renew — Pay ₹{sel ? String(sel.price) : String(b.price)} via Cashfree</button></div>;
+                if (full) return <p><span className="inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Batch full</span></p>;
+                if (closed) return <p><span className="inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold capitalize text-slate-500">Enrolment {s(b, "status")}</span></p>;
+                return <div className="space-y-3">
+                  {plans.length > 0 ? <div className="space-y-2">{plans.map(pl => { const pid = s(pl, "id"); const disc = planDiscount(pl); const selected = selId === pid; return <button key={pid} onClick={() => setSelPlan({ ...selPlan, [bid]: pid })} aria-pressed={selected} className={`app-press flex w-full items-center gap-3 rounded-2xl border-2 p-3 text-left ${selected ? "border-brand bg-brand-tint" : "border-slate-200 bg-white"}`}><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${selected ? "border-brand bg-brand" : "border-slate-300 bg-white"}`}>{selected && <span className="h-2.5 w-2.5 rounded-full bg-white" />}</span><span className="min-w-0 flex-1"><span className="block text-sm font-extrabold text-ink">{s(pl, "name")}</span><span className="mt-0.5 block text-xs leading-snug text-slate-500">{planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</span></span><span className="shrink-0 text-right"><span className="block text-base font-extrabold text-ink">₹{String(pl.price)}</span>{n(pl, "mrp") > 0 ? <span className="block text-xs font-normal text-slate-400 line-through">₹{String(pl.mrp)}</span> : null}{disc > 0 && <span className="mt-0.5 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800">{disc}% OFF</span>}</span></button>; })}</div> : <p className="text-xs text-slate-500">No plans yet for this batch — batch price applies.</p>}
+                  <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand app-press w-full !py-2.5 text-sm">{payBusy === bid ? "Starting payment…" : (sel ? n(sel, "price") > 0 : n(b, "price") > 0) ? `Enroll — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree` : "Enroll free"}</button>
                 </div>;
-              })()}
-              {profile?.role === "admin" && <button onClick={() => startEditBatch(b)} className="mt-2 rounded-lg border px-3 py-1 text-xs font-bold">Edit batch</button>}
-              {isStaff && <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>}
-              {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
+              })()}</div>}
+              {isStaff && <div className="mt-4 border-t border-slate-100 pt-3">
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Manage</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {profile?.role === "admin" && <button onClick={() => startEditBatch(b)} className="app-press rounded-lg border px-3 py-1.5 text-xs font-bold">Edit batch</button>}
+                  <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="app-press rounded-lg border px-3 py-1.5 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
+                </div>
+                {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
+              </div>}
             </div></div>;
           })}
         </div>
