@@ -69,6 +69,10 @@ export default function DashboardPage() {
   const [leadEmail, setLeadEmail] = useState<Record<string, string>>({});
   const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
   const [payBusy, setPayBusy] = useState("");
+  // PW-style subscription plans
+  const [planBatch, setPlanBatch] = useState("");
+  const [planForm, setPlanForm] = useState({ name: "Monthly", price: "", mrp: "", duration_days: "30", features: "" });
+  const [selPlan, setSelPlan] = useState<Record<string, string>>({});
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Cashfree return landing: /dashboard?section=batches&paid=1 (or payment=failed)
@@ -106,7 +110,7 @@ export default function DashboardPage() {
   }
 
   async function loadAll() {
-    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments","payments"];
+    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments","payments","batch_plans","subscriptions"];
     const out: Record<string, Row[]> = {};
     for (const t of tables) {
       const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
@@ -128,8 +132,33 @@ export default function DashboardPage() {
   const effectiveId = childProfile ? s(childProfile, "id") : (profile?.id || "");
   const effectiveName = childProfile ? s(childProfile, "full_name") : (profile?.full_name || "");
   const isStaff = profile?.role === "admin" || profile?.role === "teacher";
-  const viewStudent = (r: Row) => isStaff || s(r, "student_id") === effectiveId;
+  const viewStudent = (r: Row) => profile?.role === "teacher" ? (myBatchIds.includes(s(r, "batch_id")) || teacherStudentIds.has(s(r, "student_id"))) : isStaff || s(r, "student_id") === effectiveId;
   const viewUser = (r: Row) => isStaff || s(r, "user_id") === effectiveId || s(r, "user_id") === profile?.id;
+  // ---- PW-style access: a student sees a batch's content only while they
+  // hold an ACTIVE subscription for it (valid_until >= today). Legacy
+  // enrolments with no valid_until (created before subscriptions existed)
+  // are grandfathered as active. Teachers see only their own batches.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const subStatus = (sub: Row) => {
+    if (s(sub, "status") === "cancelled") return "cancelled";
+    const vu = s(sub, "valid_until");
+    return vu && vu < todayStr ? "expired" : "active";
+  };
+  const mySubs = (data.subscriptions || []).filter(x => s(x, "student_id") === effectiveId);
+  const activeBatchIds = new Set<string>([
+    ...mySubs.filter(x => subStatus(x) === "active").map(x => s(x, "batch_id")),
+    ...(data.enrollments || []).filter(e => s(e, "student_id") === effectiveId && (s(e, "subscription_status") || "active") === "active" && (!s(e, "valid_until") || s(e, "valid_until") >= todayStr)).map(e => s(e, "batch_id")),
+  ]);
+  const myBatchIds = profile?.role === "teacher" ? batches.filter(b => s(b, "teacher_id") === profile?.id).map(b => s(b, "id")) : [];
+  const canSeeBatch = (batchId: string) => {
+    if (profile?.role === "admin") return true;
+    if (profile?.role === "teacher") return myBatchIds.includes(batchId);
+    return batchId ? activeBatchIds.has(batchId) : false;
+  };
+  const teacherStudentIds = new Set((data.enrollments || []).filter(e => myBatchIds.includes(s(e, "batch_id"))).map(e => s(e, "student_id")));
+  const subFor = (studentId: string, batchId: string) => mySubs.find(x => s(x, "student_id") === studentId && s(x, "batch_id") === batchId) || (data.enrollments || []).find(e => s(e, "student_id") === studentId && s(e, "batch_id") === batchId);
+  const planDiscount = (pl: Row) => { const mrp = n(pl, "mrp"); const pr = n(pl, "price"); return mrp > pr ? Math.round((mrp - pr) / mrp * 100) : 0; };
+  const planValidity = (pl: Row) => { const d = n(pl, "duration_days"); return d >= 9999 ? "Full Course — lifetime access" : d >= 365 ? `Valid ${Math.round(d / 365)} year${d >= 730 ? "s" : ""}` : d >= 30 ? `Valid ${Math.round(d / 30)} month${d >= 60 ? "s" : ""}` : `Valid ${d} days`; };
 
   function isEnabled(key: string) {
     if (!profile) return false;
@@ -171,15 +200,25 @@ export default function DashboardPage() {
     const { error } = await supabase.from("enrollments").insert({ batch_id: enrolBatch, student_id: enrolStudent });
     if (error) setMsg(error.message); else { setMsg(`Enrolled ${nameOf(enrolStudent)} into ${batchName(enrolBatch)}.`); loadAll(); }
   }
+  async function createPlan(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!planBatch || !planForm.name || planForm.price === "") return setMsg("Pick a batch, a plan name and a price.");
+    const { error } = await supabase.from("batch_plans").insert({ batch_id: planBatch, name: planForm.name, price: Number(planForm.price), mrp: planForm.mrp ? Number(planForm.mrp) : null, duration_days: Number(planForm.duration_days || 30), features: planForm.features || null });
+    if (error) setMsg(error.message); else { setMsg(`Plan "${planForm.name}" created for ${batchName(planBatch)}.`); setPlanForm({ name: "Monthly", price: "", mrp: "", duration_days: "30", features: "" }); loadAll(); }
+  }
+  async function togglePlan(row: Row) {
+    const { error } = await supabase.from("batch_plans").update({ is_active: String(row.is_active) === "false" }).eq("id", row.id as string);
+    if (error) setMsg(error.message); else loadAll();
+  }
   // ---- Cashfree pay-and-enrol (student) ----
-  async function payAndEnrol(batchId: string) {
+  async function payAndEnrol(batchId: string, planId?: string) {
     const batch = batches.find(b => s(b, "id") === batchId);
-    const price = batch ? n(batch, "price") : 0;
+    const price = planId ? n((data.batch_plans || []).find(x => s(x, "id") === planId), "price") : (batch ? n(batch, "price") : 0);
     setPayBusy(batchId); setMsg("");
     try {
       const res = await fetch("/api/cashfree/create-order", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batch_id: batchId }),
+        body: JSON.stringify({ batch_id: batchId, plan_id: planId || undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -388,7 +427,7 @@ export default function DashboardPage() {
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "u-academy-progress-report.csv"; a.click(); URL.revokeObjectURL(a.href);
   }
   function reportRows() {
-    const who = profile?.role === "admin" || profile?.role === "teacher" ? students : students.filter(p => s(p, "id") === effectiveId);
+    const who = profile?.role === "admin" ? students : profile?.role === "teacher" ? students.filter(p => teacherStudentIds.has(s(p, "id"))) : students.filter(p => s(p, "id") === effectiveId);
     return who.map(stu => {
       const sid = s(stu, "id");
       const att = (data.attendance || []).filter(a => s(a, "student_id") === sid);
@@ -499,8 +538,8 @@ export default function DashboardPage() {
                   <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Unanswered doubts: <b>{openDoubts.length}</b></span><button onClick={() => openSection("doubts")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Doubts →</button></li>
                 </ul>
               </div>
-              {(profile.role === "student" || profile.role === "parent") && <div className="card mt-5"><h3 className="font-extrabold">My batches{childProfile ? ` — ${effectiveName}` : ""}</h3>
-                {(() => { const mine = (data.enrollments || []).filter(e => s(e, "student_id") === effectiveId); if (!mine.length) return <p className="mt-2 text-sm text-slate-500">You are not enrolled in any batch yet. Go to Batches, pick one, and pay via Cashfree (or pay at the institute) to enrol.</p>; return <ul className="mt-2 space-y-2 text-sm">{mine.map(e => { const b = batches.find(x => s(x, "id") === s(e, "batch_id")); if (!b) return null; return <li key={s(e, "id")} className="flex items-center justify-between rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")} · {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</span><span className="rounded-full bg-brand-tint px-2 py-1 text-xs font-extrabold text-brand-dark">✓ Enrolled</span></li>; })}</ul>; })()}
+              {(profile.role === "student" || profile.role === "parent") && <div className="card mt-5"><h3 className="font-extrabold">My subscriptions{childProfile ? ` — ${effectiveName}` : ""}</h3>
+                {mySubs.length === 0 ? <p className="mt-2 text-sm text-slate-500">No subscription yet. Go to Batches, pick a plan (Monthly / Quarterly / Yearly / Full Course) and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{mySubs.map(x => { const st = subStatus(x); const nearExpiry = st === "active" && s(x, "valid_until") && new Date(s(x, "valid_until")).getTime() - Date.now() < 7 * 86400000; return <li key={s(x, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{batchName(s(x, "batch_id"))}</b> — {s(x, "plan_name") || "Plan"} · ₹{String(x.amount_paid ?? 0)} · Valid until {s(x, "valid_until") || "—"}</span><span className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-extrabold ${st === "active" ? "bg-brand-tint text-brand-dark" : "bg-red-100 text-red-700"}`}>{st === "active" ? "Active" : "Expired"}</span>{(st === "expired" || nearExpiry) && <button onClick={() => { openSection("batches"); }} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
               </div>}
               <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -571,10 +610,34 @@ export default function DashboardPage() {
           {sel("Status", form.status || "active", v => setForm({ ...form, status: v }), [{ v: "active", l: "Active — open for enrolment" }, { v: "upcoming", l: "Upcoming" }, { v: "closed", l: "Closed" }])}
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save batch</button></form>}
         {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Enrol a student into a batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-3">
-          {sel("Batch", enrolBatch, setEnrolBatch, batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", enrolBatch, setEnrolBatch, (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           {sel("Student", enrolStudent, setEnrolStudent, students.map(t => ({ v: s(t, "id"), l: `${s(t, "full_name")} (${s(t, "class_label")})` })))}
           <div className="flex items-end"><button onClick={enrol} className="btn-brand !py-2.5 text-sm">Enrol</button></div>
         </div></div>}
+        {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Subscription plans — Physics Wallah style</h3>
+          <p className="mt-1 text-sm text-slate-600">Create a plan per batch (Monthly / Quarterly / Half-Yearly / Yearly / Full Course). Students pick a plan on the batch card and pay that price via Cashfree — the MRP is shown struck through with the discount %.</p>
+          <form onSubmit={createPlan} className="mt-3 grid gap-3 sm:grid-cols-3">
+            {sel("Batch", planBatch, setPlanBatch, (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+            <div><label className="label">Plan name</label><input required className="input" value={planForm.name} onChange={e => setPlanForm({ ...planForm, name: e.target.value })} placeholder="Monthly / Quarterly / Yearly / Full Course" /></div>
+            <div><label className="label">Price (₹)</label><input required type="number" className="input" value={planForm.price} onChange={e => setPlanForm({ ...planForm, price: e.target.value })} /></div>
+            <div><label className="label">MRP (₹, struck through — optional)</label><input type="number" className="input" value={planForm.mrp} onChange={e => setPlanForm({ ...planForm, mrp: e.target.value })} /></div>
+            <div><label className="label">Validity (days)</label><input required type="number" className="input" value={planForm.duration_days} onChange={e => setPlanForm({ ...planForm, duration_days: e.target.value })} /></div>
+            <div className="flex flex-wrap items-end gap-2">{[30, 90, 180, 365, 9999].map(d => <button key={d} type="button" onClick={() => setPlanForm({ ...planForm, duration_days: String(d), name: d === 30 ? "Monthly" : d === 90 ? "Quarterly" : d === 180 ? "Half-Yearly" : d === 365 ? "Yearly" : "Full Course" })} className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${planForm.duration_days === String(d) ? "bg-brand text-white" : "bg-slate-200"}`}>{d === 9999 ? "Full Course" : `${d}d`}</button>)}</div>
+            <div className="sm:col-span-2"><label className="label">Features (what this plan includes)</label><input className="input" value={planForm.features} onChange={e => setPlanForm({ ...planForm, features: e.target.value })} placeholder="e.g. Live classes + recorded lectures + test series" /></div>
+            <div className="flex items-end"><button className="btn-brand !py-2.5 text-sm">Save plan</button></div>
+          </form>
+          <div className="mt-3 space-y-2">
+            {(data.batch_plans || []).length === 0 && <p className="text-sm text-slate-500">No plans yet — create one above. Until a plan exists, students pay the batch price shown on the batch card.</p>}
+            {(data.batch_plans || []).map(pl => <div key={s(pl, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-sm"><span><b>{s(pl, "name")}</b> — {batchName(s(pl, "batch_id"))} · ₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="ml-1 text-slate-400 line-through">₹{String(pl.mrp)}</span> : ""}{planDiscount(pl) ? <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-800">{planDiscount(pl)}% OFF</span> : ""} · {planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</span><span className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${String(pl.is_active) === "false" ? "bg-slate-200" : "bg-brand-tint text-brand-dark"}`}>{String(pl.is_active) === "false" ? "Inactive" : "Active"}</span><button onClick={() => togglePlan(pl)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">{String(pl.is_active) === "false" ? "Activate" : "Deactivate"}</button></span></div>)}
+          </div>
+        </div>}
+        {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Subscriptions</h3>
+          <p className="mt-1 text-sm text-slate-600">Who bought which plan, for how much, and until when. Status is computed from valid until vs today.</p>
+          <div className="mt-3 space-y-2">
+            {(data.subscriptions || []).length === 0 && <p className="text-sm text-slate-500">No subscriptions yet — they appear here once a student pays for a plan (or enrols in a free plan).</p>}
+            {(data.subscriptions || []).map(x => { const st = subStatus(x); return <div key={s(x, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-sm"><span><b>{nameOf(s(x, "student_id"))}</b> — {batchName(s(x, "batch_id"))} · {s(x, "plan_name") || "Plan"} · ₹{String(x.amount_paid ?? 0)} · Valid {s(x, "valid_from")} → {s(x, "valid_until") || "—"}{s(x, "order_id") ? ` · Order ${s(x, "order_id")}` : ""}</span><span className={`rounded-full px-2 py-1 text-xs font-extrabold ${st === "active" ? "bg-brand-tint text-brand-dark" : "bg-red-100 text-red-700"}`}>{st}</span></div>; })}
+          </div>
+        </div>}
         <div className="card mt-3"><h3 className="font-extrabold">Courses — recorded courses, bundles &amp; pricing</h3>
           <p className="mt-1 text-sm text-slate-600">Create paid or free courses and enrol students into them (with a coupon code for a discount). A bundle groups courses under one name, e.g. “Board Excellence Pack”.</p>
           {isStaff && <form onSubmit={createCourse} className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -605,16 +668,25 @@ export default function DashboardPage() {
             return <div key={s(b, "id")} className="card !p-4"><b className="text-sm">{s(b, "name")}</b>
               <p className="text-xs text-slate-500">{s(b, "class_label")} · {s(b, "board")} · {s(b, "subject")} · Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"} · {s(b, "status") || "active"}</p>
               {!isStaff && (() => {
+                const bid = s(b, "id");
                 const mine = enrolled.some(e => s(e, "student_id") === effectiveId);
                 const full = s(b, "capacity") && enrolled.length >= n(b, "capacity");
                 const closed = (s(b, "status") || "active") !== "active";
-                if (mine) return <span className="mt-2 inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span>;
+                const plans = (data.batch_plans || []).filter(x => s(x, "batch_id") === bid && String(x.is_active) !== "false");
+                const mySub = mySubs.find(x => s(x, "batch_id") === bid && subStatus(x) === "active") || mySubs.find(x => s(x, "batch_id") === bid);
+                const selId = selPlan[bid] || (plans[0] ? s(plans[0], "id") : "");
+                const sel = plans.find(x => s(x, "id") === selId);
+                if (mine && mySub && subStatus(mySub) === "active") return <div className="mt-2"><span className="inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled — {s(mySub, "plan_name") || "Batch"} · Valid until {s(mySub, "valid_until") || "—"}</span></div>;
+                if (mine && mySub && subStatus(mySub) === "expired") return <div className="mt-2"><span className="inline-block rounded-full bg-red-100 px-3 py-1.5 text-xs font-extrabold text-red-700">Subscription expired {s(mySub, "valid_until")}</span><button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand ml-2 !py-2 text-xs">Renew — Pay ₹{sel ? String(sel.price) : String(b.price)} via Cashfree</button></div>;
                 if (full) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Batch full</span>;
                 if (closed) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Enrolment {s(b, "status")}</span>;
-                return <button onClick={() => payAndEnrol(s(b, "id"))} disabled={payBusy === s(b, "id")} className="btn-brand mt-2 !py-2 text-xs">{payBusy === s(b, "id") ? "Starting payment…" : n(b, "price") > 0 ? `Enroll — Pay ₹${String(b.price)} via Cashfree` : "Enroll free"}</button>;
+                return <div className="mt-2">
+                  {plans.length > 0 ? <div className="grid gap-2 sm:grid-cols-3">{plans.map(pl => { const pid = s(pl, "id"); const disc = planDiscount(pl); return <button key={pid} onClick={() => setSelPlan({ ...selPlan, [bid]: pid })} className={`rounded-2xl border-2 p-3 text-left ${selId === pid ? "border-brand bg-brand-tint" : "border-slate-200 bg-white"}`}><b className="text-sm">{s(pl, "name")}</b><span className="mt-1 block text-lg font-extrabold">₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="ml-1 text-sm font-normal text-slate-400 line-through">₹{String(pl.mrp)}</span> : ""}</span>{disc > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-800">{disc}% OFF</span>}<span className="mt-1 block text-xs text-slate-500">{planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</span></button>; })}</div> : <p className="text-xs text-slate-500">No plans yet for this batch — batch price applies.</p>}
+                  <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand mt-2 !py-2 text-xs">{payBusy === bid ? "Starting payment…" : (sel ? n(sel, "price") > 0 : n(b, "price") > 0) ? `Enroll — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree` : "Enroll free"}</button>
+                </div>;
               })()}
               <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
-              {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>)}</ul>}
+              {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
             </div>;
           })}
         </div>
@@ -630,16 +702,17 @@ export default function DashboardPage() {
     if (section === "lectures") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Add lecture</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Lecture title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           <div><label className="label">Chapter</label><input className="input" value={form.chapter || ""} onChange={e => setForm({ ...form, chapter: e.target.value })} /></div>
           <div><label className="label">YouTube URL</label><input className="input" value={form.youtube_url || ""} onChange={e => setForm({ ...form, youtube_url: e.target.value })} placeholder="https://www.youtube.com/watch?v=…" /></div>
           <div><label className="label">Notes</label><input className="input" value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save lecture</button></form>}
+        {!isStaff && activeBatchIds.size === 0 && <p className="card mt-3 text-sm text-slate-600">Enrol in a batch to access its lectures — pick a plan in Batches and pay via Cashfree.</p>}
         <div className="mt-4 space-y-2">
-          {(data.lectures || []).length === 0 && empty("No lectures yet.")}
-          {(data.lectures || []).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="text-sm">{s(l, "title")}</b><p className="text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
+          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id"))).length === 0 && empty("No lectures yet.")}
+          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id"))).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="text-sm">{s(l, "title")}</b><p className="text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
             {id ? <div className="mt-2 aspect-video w-full max-w-xl overflow-hidden rounded-xl"><iframe className="h-full w-full" src={`https://www.youtube.com/embed/${id}`} title={s(l, "title")} allowFullScreen /></div> : s(l, "youtube_url") ? <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(l, "youtube_url")} target="_blank" rel="noreferrer">▶ Watch on YouTube</a> : null}
             {s(l, "notes") && <p className="mt-2 text-sm text-slate-600">{s(l, "notes")}</p>}</div>; })}
         </div>
@@ -648,32 +721,33 @@ export default function DashboardPage() {
     if (section === "materials") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Add study material</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           {sel("Kind", form.kind || "", v => setForm({ ...form, kind: v }), [{ v: "Notes", l: "Notes" }, { v: "PYQ", l: "PYQ" }, { v: "Worksheet", l: "Worksheet" }, { v: "E-book", l: "E-book" }])}
           <div><label className="label">File / link URL</label><input className="input" value={form.file_url || ""} onChange={e => setForm({ ...form, file_url: e.target.value })} placeholder="https://… (PDF / Drive link)" /></div>
           <div className="sm:col-span-2"><label className="label">Description</label><input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save material</button></form>}
+        {!isStaff && activeBatchIds.size === 0 && <p className="card mt-3 text-sm text-slate-600">Enrol in a batch to access its study materials — pick a plan in Batches and pay via Cashfree.</p>}
         <div className="mt-4 space-y-2">
-          {(data.materials || []).length === 0 && empty("No materials yet.")}
-          {(data.materials || []).map(m => <div key={s(m, "id")} className="card !p-4"><b className="text-sm">{s(m, "title")}</b><p className="text-xs text-slate-500">{batchName(s(m, "batch_id"))} · {s(m, "kind")}</p>{s(m, "description") && <p className="mt-1 text-sm text-slate-600">{s(m, "description")}</p>}{s(m, "file_url") && <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(m, "file_url")} target="_blank" rel="noreferrer">Open file ↗</a>}</div>)}
+          {(data.materials || []).filter(m => canSeeBatch(s(m, "batch_id"))).length === 0 && empty("No materials yet.")}
+          {(data.materials || []).filter(m => canSeeBatch(s(m, "batch_id"))).map(m => <div key={s(m, "id")} className="card !p-4"><b className="text-sm">{s(m, "title")}</b><p className="text-xs text-slate-500">{batchName(s(m, "batch_id"))} · {s(m, "kind")}</p>{s(m, "description") && <p className="mt-1 text-sm text-slate-600">{s(m, "description")}</p>}{s(m, "file_url") && <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(m, "file_url")} target="_blank" rel="noreferrer">Open file ↗</a>}</div>)}
         </div>
       </div>
     );
     if (section === "assignments") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create assignment</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           <div><label className="label">Due date</label><input type="date" className="input" value={form.due_date || ""} onChange={e => setForm({ ...form, due_date: e.target.value })} /></div>
           <div className="sm:col-span-2"><label className="label">Description</label><input className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save assignment</button></form>}
         <div className="mt-4 space-y-2">
-          {(data.assignments || []).length === 0 && empty("No assignments yet.")}
-          {(data.assignments || []).map(a => {
+          {(data.assignments || []).filter(a => canSeeBatch(s(a, "batch_id"))).length === 0 && empty("No assignments yet.")}
+          {(data.assignments || []).filter(a => canSeeBatch(s(a, "batch_id"))).map(a => {
             const aid = s(a, "id");
-            const subs = (data.submissions || []).filter(x => s(x, "assignment_id") === aid);
+            const subs = (data.submissions || []).filter(x => s(x, "assignment_id") === aid && (profile?.role !== "teacher" || teacherStudentIds.has(s(x, "student_id"))));
             const mine = subs.find(x => s(x, "student_id") === effectiveId);
             const visibleSubs = isStaff ? subs : mine ? [mine] : [];
             return <div key={aid} className="card !p-4"><b className="text-sm">{s(a, "title")}</b><p className="text-xs text-slate-500">{batchName(s(a, "batch_id"))} · {s(a, "subject")} · Due {s(a, "due_date") || "—"}</p>{s(a, "description") && <p className="mt-1 text-sm text-slate-600">{s(a, "description")}</p>}
@@ -691,15 +765,15 @@ export default function DashboardPage() {
     if (section === "tests") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create test</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Test title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           <div><label className="label">Total marks</label><input type="number" className="input" value={form.total_marks || ""} onChange={e => setForm({ ...form, total_marks: e.target.value })} /></div>
           <div><label className="label">Test date</label><input type="date" className="input" value={form.test_date || ""} onChange={e => setForm({ ...form, test_date: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save test</button></form>}
         <div className="mt-4 space-y-2">
-          {(data.tests || []).length === 0 && empty("No tests yet.")}
-          {(data.tests || []).map(t => {
+          {(data.tests || []).filter(t => canSeeBatch(s(t, "batch_id"))).length === 0 && empty("No tests yet.")}
+          {(data.tests || []).filter(t => canSeeBatch(s(t, "batch_id"))).map(t => {
             const tid = s(t, "id");
             const results = (data.test_results || []).filter(r => s(r, "test_id") === tid);
             const avg = results.length ? (results.reduce((a, r) => a + n(r, "marks"), 0) / results.length).toFixed(1) : "—";
@@ -707,7 +781,7 @@ export default function DashboardPage() {
             const visible = isStaff ? results : mine ? [mine] : [];
             return <div key={tid} className="card !p-4"><b className="text-sm">{s(t, "title")}</b><p className="text-xs text-slate-500">{batchName(s(t, "batch_id"))} · {s(t, "subject")} · Total {String(t.total_marks ?? "")} · {s(t, "test_date")} · Class average: {avg}</p>
               {isStaff && <div className="mt-3 rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold">Enter marks per student</p><div className="mt-2 grid gap-2 sm:grid-cols-4">
-                {sel("Student", testStu[tid] || "", v => setTestStu({ ...testStu, [tid]: v }), students.map(x => ({ v: s(x, "id"), l: s(x, "full_name") })))}
+                {sel("Student", testStu[tid] || "", v => setTestStu({ ...testStu, [tid]: v }), (profile?.role === "teacher" ? students.filter(x => teacherStudentIds.has(s(x, "id"))) : students).map(x => ({ v: s(x, "id"), l: s(x, "full_name") })))}
                 <div><label className="label">Marks</label><input type="number" className="input" value={testMarks[tid] || ""} onChange={e => setTestMarks({ ...testMarks, [tid]: e.target.value })} /></div>
                 <div><label className="label">Remarks</label><input className="input" value={testRem[tid] || ""} onChange={e => setTestRem({ ...testRem, [tid]: e.target.value })} /></div>
                 <div className="flex items-end"><button onClick={() => enterMarks(tid)} className="btn-brand !py-2.5 text-xs">Save marks</button></div></div></div>}
@@ -720,7 +794,7 @@ export default function DashboardPage() {
     if (section === "live_classes") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Schedule live class</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           <div><label className="label">Meet / Zoom link</label><input className="input" value={form.meet_url || ""} onChange={e => setForm({ ...form, meet_url: e.target.value })} placeholder="https://meet.google.com/…" /></div>
@@ -729,7 +803,7 @@ export default function DashboardPage() {
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save live class</button></form>}
         <div className="card mt-3"><h3 className="font-extrabold">Weekly timetable</h3>
           {isStaff && <form onSubmit={createTimetable} className="mt-3 grid gap-3 sm:grid-cols-3">
-            {sel("Batch", ttForm.batch_id, v => setTtForm({ ...ttForm, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+            {sel("Batch", ttForm.batch_id, v => setTtForm({ ...ttForm, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
             {sel("Day", ttForm.day_of_week, v => setTtForm({ ...ttForm, day_of_week: v }), DAYS.map(d => ({ v: d, l: d })))}
             <div><label className="label">Subject</label><input className="input" value={ttForm.subject} onChange={e => setTtForm({ ...ttForm, subject: e.target.value })} /></div>
             <div><label className="label">Start time</label><input type="time" className="input" value={ttForm.start_time} onChange={e => setTtForm({ ...ttForm, start_time: e.target.value })} /></div>
@@ -738,19 +812,19 @@ export default function DashboardPage() {
             <div className="flex items-end"><button className="btn-brand !py-2.5 text-sm">Add to timetable</button></div>
           </form>}
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {DAYS.map(d => { const rows = (data.timetable || []).filter(x => s(x, "day_of_week") === d).sort((a, b) => s(a, "start_time").localeCompare(s(b, "start_time"))); return <div key={d} className="rounded-xl border p-3"><b className="text-sm">{d}</b>{rows.length === 0 ? <p className="mt-1 text-xs text-slate-500">No classes.</p> : <ul className="mt-1 space-y-1 text-xs">{rows.map(x => <li key={s(x, "id")} className="rounded-lg bg-slate-50 px-2 py-1.5"><b>{s(x, "start_time")}–{s(x, "end_time")}</b> · {s(x, "subject")} · {batchName(s(x, "batch_id"))}{s(x, "teacher_id") ? ` · ${nameOf(s(x, "teacher_id"))}` : ""}</li>)}</ul>}</div>; })}
+            {DAYS.map(d => { const rows = (data.timetable || []).filter(x => s(x, "day_of_week") === d && canSeeBatch(s(x, "batch_id"))).sort((a, b) => s(a, "start_time").localeCompare(s(b, "start_time"))); return <div key={d} className="rounded-xl border p-3"><b className="text-sm">{d}</b>{rows.length === 0 ? <p className="mt-1 text-xs text-slate-500">No classes.</p> : <ul className="mt-1 space-y-1 text-xs">{rows.map(x => <li key={s(x, "id")} className="rounded-lg bg-slate-50 px-2 py-1.5"><b>{s(x, "start_time")}–{s(x, "end_time")}</b> · {s(x, "subject")} · {batchName(s(x, "batch_id"))}{s(x, "teacher_id") ? ` · ${nameOf(s(x, "teacher_id"))}` : ""}</li>)}</ul>}</div>; })}
           </div>
         </div>
         <div className="mt-4 space-y-2">
-          {(data.live_classes || []).length === 0 && empty("No live classes scheduled yet.")}
-          {(data.live_classes || []).map(c => <div key={s(c, "id")} className="card !p-4"><b className="text-sm">{s(c, "title")}</b><p className="text-xs text-slate-500">{batchName(s(c, "batch_id"))} · {s(c, "subject")} · {s(c, "starts_at") ? new Date(s(c, "starts_at")).toLocaleString() : "—"}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(c, "status") === "live" ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{s(c, "status") === "live" ? "● Live now" : "Scheduled"}</span>{s(c, "meet_url") && <div><a href={s(c, "meet_url")} target="_blank" rel="noreferrer" className="btn-brand mt-2 inline-block !py-2 text-xs">Join class ↗</a></div>}</div>)}
+          {(data.live_classes || []).filter(c => canSeeBatch(s(c, "batch_id"))).length === 0 && empty("No live classes scheduled yet.")}
+          {(data.live_classes || []).filter(c => canSeeBatch(s(c, "batch_id"))).map(c => <div key={s(c, "id")} className="card !p-4"><b className="text-sm">{s(c, "title")}</b><p className="text-xs text-slate-500">{batchName(s(c, "batch_id"))} · {s(c, "subject")} · {s(c, "starts_at") ? new Date(s(c, "starts_at")).toLocaleString() : "—"}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(c, "status") === "live" ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{s(c, "status") === "live" ? "● Live now" : "Scheduled"}</span>{s(c, "meet_url") && <div><a href={s(c, "meet_url")} target="_blank" rel="noreferrer" className="btn-brand mt-2 inline-block !py-2 text-xs">Join class ↗</a></div>}</div>)}
         </div>
       </div>
     );
     if (section === "attendance") return (
       <div>
         {isStaff ? <div className="card mt-3"><h3 className="font-extrabold">Mark attendance — full roster</h3><div className="mt-3 grid gap-3 sm:grid-cols-3">
-          {sel("Batch", attBatch, setAttBatch, batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", attBatch, setAttBatch, (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Date</label><input type="date" className="input" value={attDate} onChange={e => setAttDate(e.target.value)} /></div>
           <div className="flex items-end"><button onClick={() => { const r = rosterStudents(attBatch); const m: Record<string, string> = {}; r.forEach(x => { m[s(x, "id")] = "present"; }); setAttMarks(m); setMsg(r.length ? `Roster loaded: ${r.length} students.` : "No students enrolled in this batch yet."); }} className="btn-brand !py-2.5 text-sm">Load roster</button></div>
         </div>
@@ -780,12 +854,12 @@ export default function DashboardPage() {
     if (section === "doubts") return (
       <div>
         <form onSubmit={askDoubt} className="card mt-3"><h3 className="font-extrabold">Ask a doubt</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
           <div><label className="label">Your doubt / question</label><input required className="input" value={form.question || ""} onChange={e => setForm({ ...form, question: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Ask</button></form>
         <div className="mt-4 space-y-2">
-          {(data.doubts || []).filter(d => isStaff || s(d, "student_id") === effectiveId).length === 0 && empty("No doubts yet.")}
-          {(data.doubts || []).filter(d => isStaff || s(d, "student_id") === effectiveId).map(d => { const did = s(d, "id"); return <div key={did} className="card !p-4"><b className="text-sm">{s(d, "question")}</b><p className="text-xs text-slate-500">{nameOf(s(d, "student_id"))} · {batchName(s(d, "batch_id"))} · {s(d, "status")}</p>
+          {(data.doubts || []).filter(d => profile?.role === "admin" ? true : profile?.role === "teacher" ? myBatchIds.includes(s(d, "batch_id")) : s(d, "student_id") === effectiveId).length === 0 && empty("No doubts yet.")}
+          {(data.doubts || []).filter(d => profile?.role === "admin" ? true : profile?.role === "teacher" ? myBatchIds.includes(s(d, "batch_id")) : s(d, "student_id") === effectiveId).map(d => { const did = s(d, "id"); return <div key={did} className="card !p-4"><b className="text-sm">{s(d, "question")}</b><p className="text-xs text-slate-500">{nameOf(s(d, "student_id"))} · {batchName(s(d, "batch_id"))} · {s(d, "status")}</p>
             {s(d, "answer") ? <p className="mt-2 rounded-xl bg-brand-tint p-3 text-sm"><b>Answer:</b> {s(d, "answer")}</p> : <p className="mt-2 text-sm text-slate-500">Not answered yet.</p>}
             {isStaff && <div className="mt-2"><textarea className="input" rows={2} placeholder="Write your answer here…" value={doubtAns[did] || ""} onChange={e => setDoubtAns({ ...doubtAns, [did]: e.target.value })} /><button onClick={() => answerDoubt(did)} className="btn-brand mt-2 !py-2 text-xs">Post answer</button></div>}
           </div>; })}

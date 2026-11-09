@@ -45,9 +45,22 @@ export async function GET(request: NextRequest) {
     const batchId = payment.batch_id ? String(payment.batch_id) : null;
     const courseId = payment.course_id ? String(payment.course_id) : null;
     const amount = Number(payment.amount || 0);
+    const planId = payment.plan_id ? String(payment.plan_id) : null;
+    let validUntil: string | null = null;
+    let planName = "";
+    if (planId) {
+      const { data: pl } = await supabase.from("batch_plans").select("*").eq("id", planId).single();
+      if (pl) {
+        planName = String(pl.name || "Plan");
+        const days = Number(pl.duration_days || 0);
+        if (days) validUntil = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+      }
+    }
 
     if (batchId) {
-      await supabase.from("enrollments").upsert({ batch_id: batchId, student_id: studentId }, { onConflict: "batch_id,student_id" });
+      await supabase.from("enrollments").upsert({ batch_id: batchId, student_id: studentId, plan_id: planId, valid_until: validUntil, subscription_status: "active" }, { onConflict: "batch_id,student_id" });
+      // PW-style subscription: the purchase that gives access until valid_until.
+      await supabase.from("subscriptions").insert({ student_id: studentId, batch_id: batchId, plan_id: planId, plan_name: planName || null, amount_paid: amount, valid_from: new Date().toISOString().slice(0, 10), valid_until: validUntil, status: "active", order_id: orderId });
     }
     if (courseId) {
       await supabase.from("course_enrollments").upsert({ course_id: courseId, student_id: studentId, price_paid: amount }, { onConflict: "course_id,student_id" });

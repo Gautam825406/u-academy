@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
-// POST /api/cashfree/create-order  { batch_id, course_id? }
+// POST /api/cashfree/create-order  { batch_id, plan_id?, course_id? }
+// plan_id: a batch_plans row — its price is charged and its duration
+// decides the subscription validity. Free plans enrol directly.
 // Creates a Cashfree PG order (api-version 2023-08-01) for a paid batch or
 // course, records a `payments` row (status 'created'), and returns the
 // payment_session_id / payment_link the student is redirected to.
@@ -17,6 +19,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
     const batchId = body.batch_id as string | undefined;
     const courseId = body.course_id as string | undefined;
+    const planId = body.plan_id as string | undefined;
+    let plan: Record<string, unknown> | null = null;
+    let durationDays = 0;
     if (!batchId && !courseId) {
       return NextResponse.json({ error: "Pick a batch or a course first." }, { status: 400 });
     }
@@ -30,6 +35,15 @@ export async function POST(request: NextRequest) {
       if (String(batch.status) === "closed") return NextResponse.json({ error: "This batch is closed for enrolment." }, { status: 400 });
       price = Number(batch.price || 0);
       title = String(batch.name || "Batch");
+      if (planId) {
+        const { data: pl } = await supabase.from("batch_plans").select("*").eq("id", planId).single();
+        if (!pl || String(pl.batch_id) !== batchId) return NextResponse.json({ error: "That plan does not belong to this batch." }, { status: 400 });
+        if (String(pl.is_active) === "false") return NextResponse.json({ error: "That plan is no longer available." }, { status: 400 });
+        plan = pl as Record<string, unknown>;
+        price = Number(pl.price || 0);
+        durationDays = Number(pl.duration_days || 0);
+        title = `${title} — ${String(pl.name || "Plan")}`;
+      }
       if (batch.capacity) {
         const { count } = await supabase.from("enrollments").select("id", { count: "exact", head: true }).eq("batch_id", batchId);
         if ((count || 0) >= Number(batch.capacity)) return NextResponse.json({ error: "This batch is full." }, { status: 400 });
@@ -45,11 +59,16 @@ export async function POST(request: NextRequest) {
       if (already) return NextResponse.json({ error: "You are already enrolled in this course." }, { status: 400 });
     }
 
-    // Free — enrol directly, no Cashfree involved.
+    // Free — enrol directly, no Cashfree involved. Also record the
+    // subscription so access gating (valid_until) works for free plans.
     if (!price || price <= 0) {
       if (batchId) {
-        const { error } = await supabase.from("enrollments").insert({ batch_id: batchId, student_id: user.id });
+        const validUntil = durationDays ? new Date(Date.now() + durationDays * 86400000).toISOString().slice(0, 10) : null;
+        const { error } = await supabase.from("enrollments").upsert({ batch_id: batchId, student_id: user.id, plan_id: planId || null, valid_until: validUntil, subscription_status: "active" }, { onConflict: "batch_id,student_id" });
         if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+        if (planId) {
+          await supabase.from("subscriptions").insert({ student_id: user.id, batch_id: batchId, plan_id: planId, plan_name: String(plan?.name || "Plan"), amount_paid: 0, valid_from: new Date().toISOString().slice(0, 10), valid_until: validUntil, status: "active" });
+        }
       } else if (courseId) {
         const { error } = await supabase.from("course_enrollments").insert({ course_id: courseId, student_id: user.id, price_paid: 0 });
         if (error) return NextResponse.json({ error: error.message }, { status: 400 });
@@ -102,6 +121,7 @@ export async function POST(request: NextRequest) {
       student_id: user.id,
       batch_id: batchId || null,
       course_id: courseId || null,
+      plan_id: planId || null,
       amount: price,
       currency: "INR",
       order_id: orderId,

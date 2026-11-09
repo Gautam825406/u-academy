@@ -55,8 +55,41 @@ create table if not exists public.enrollments (
   id uuid primary key default gen_random_uuid(),
   batch_id uuid not null references public.batches(id) on delete cascade,
   student_id uuid not null references public.profiles(id) on delete cascade,
+  plan_id uuid references public.batch_plans(id) on delete set null,
+  valid_until date,
+  subscription_status text not null default 'active' check (subscription_status in ('active','expired','cancelled')),
   created_at timestamptz not null default now(),
   unique (batch_id, student_id)
+);
+
+-- ---------- Physics Wallah-style batch subscription plans ----------
+-- A batch can have several plans (Monthly / Quarterly / Half-Yearly /
+-- Yearly / Full Course). A student buys one plan via Cashfree and gets a
+-- subscriptions row; access to that batch's lectures/materials lasts
+-- until valid_until. Full Course = 9999 days.
+create table if not exists public.batch_plans (
+  id uuid primary key default gen_random_uuid(),
+  batch_id uuid not null references public.batches(id) on delete cascade,
+  name text not null,
+  price numeric not null default 0,
+  mrp numeric,
+  duration_days int not null default 30,
+  features text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create table if not exists public.subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  batch_id uuid not null references public.batches(id) on delete cascade,
+  plan_id uuid references public.batch_plans(id) on delete set null,
+  plan_name text,
+  amount_paid numeric not null default 0,
+  valid_from date not null default current_date,
+  valid_until date,
+  status text not null default 'active' check (status in ('active','expired','cancelled')),
+  order_id text,
+  created_at timestamptz not null default now()
 );
 
 -- ---------- Lectures / Materials ----------
@@ -143,7 +176,7 @@ create table if not exists public.payments (
   course_id uuid references public.courses(id) on delete set null,
   amount numeric not null, currency text not null default 'INR',
   order_id text not null unique, payment_session_id text,
-  cf_payment_id text,
+  cf_payment_id text, plan_id uuid references public.batch_plans(id) on delete set null,
   status text not null default 'created' check (status in ('created','paid','failed')),
   payment_mode text,
   created_at timestamptz not null default now()
@@ -272,7 +305,7 @@ begin
     'batches','enrollments','lectures','materials','assignments','submissions',
     'tests','test_results','attendance','fees','live_classes','doubts',
     'announcements','notifications','role_permissions','payments',
-    'courses','coupons','timetable','course_enrollments']) loop
+    'courses','coupons','timetable','course_enrollments','batch_plans','subscriptions']) loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy "auth read %I" on public.%I for select using (auth.role() = ''authenticated'')', t, t);
     execute format('create policy "auth write %I" on public.%I for insert with check (auth.role() = ''authenticated'')', t, t);
@@ -322,6 +355,10 @@ create index if not exists idx_onboarding_invites_email on public.onboarding_inv
 create index if not exists idx_payments_order on public.payments(order_id);
 create index if not exists idx_payments_student on public.payments(student_id);
 create index if not exists idx_payments_batch on public.payments(batch_id);
+create index if not exists idx_batch_plans_batch on public.batch_plans(batch_id);
+create index if not exists idx_subscriptions_student on public.subscriptions(student_id);
+create index if not exists idx_subscriptions_batch on public.subscriptions(batch_id);
+create index if not exists idx_subscriptions_valid on public.subscriptions(valid_until);
 
 -- ---------- Storage (run in Dashboard > Storage, or via SQL) ----------
 -- Create a public bucket named "materials" in Storage, then add this policy in
