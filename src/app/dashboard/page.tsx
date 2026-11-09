@@ -46,7 +46,25 @@ export default function DashboardPage() {
   async function loadProfile() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push("/auth/login"); return; }
-    const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+    let { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+    if (!data) {
+      // Self-heal for logins created before the profile trigger existed:
+      // create the profile now from the auth user (session is valid here).
+      const meta = (user.user_metadata || {}) as Record<string, string>;
+      const { count } = await supabase.from("profiles").select("id", { count: "exact", head: true });
+      await supabase.from("profiles").upsert({
+        id: user.id,
+        full_name: meta.full_name || user.email?.split("@")[0] || "User",
+        email: user.email || "", mobile: meta.mobile || "",
+        role: count === 0 ? "admin" : (meta.role || "student"),
+        class_label: meta.class_label || "Class 10", board: meta.board || "CBSE",
+        subject: meta.subject || "", child_name: meta.child_name || "",
+        child_student_id: meta.child_student_id || "",
+        institute_name: meta.institute_name || "", city: meta.city || "",
+      }, { onConflict: "id" });
+      const retry = await supabase.from("profiles").select("*").eq("id", user.id).single();
+      data = retry.data;
+    }
     setProfile((data as Profile) || null); setLoading(false);
     const tables = ["batches","lectures","assignments","tests","fees","doubts"];
     const c: Record<string, number> = {};

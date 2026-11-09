@@ -28,20 +28,45 @@ export default function RegisterPage() {
     setBusy(true); setMsg("");
     try {
       const supabase = createClient();
-      const { data: auth, error } = await supabase.auth.signUp({ email: f.email, password: f.password });
+      // Pass profile fields as user_metadata so the DB trigger
+      // (supabase/fix-profile-trigger.sql) creates the profile row
+      // server-side even if the client insert below fails.
+      const meta = {
+        full_name: f.full_name, mobile: f.mobile, role,
+        class_label: f.class_label, board: f.board, subject: f.subject,
+        child_name: f.child_name, child_student_id: f.child_student_id,
+        institute_name: f.institute_name, city: f.city,
+      };
+      let { data: auth, error } = await supabase.auth.signUp({
+        email: f.email, password: f.password, options: { data: meta },
+      });
+      if (error && /already registered/i.test(error.message)) {
+        // Login already exists (e.g. profile insert failed last time):
+        // sign in with it instead of failing.
+        const s = await supabase.auth.signInWithPassword({ email: f.email, password: f.password });
+        if (s.error) throw s.error;
+        auth = s.data;
+        error = null;
+      }
       if (error) throw error;
       const userId = auth.user?.id;
       if (!userId) throw new Error("No user returned. Check Supabase Auth settings (email confirmations may require verification — see README).");
       // First user in the whole academy becomes Admin.
+      // Note: the DB trigger already created the profile; this upsert is a
+      // belt-and-braces retry so a missing profile is repaired on login.
       const { count } = await supabase.from("profiles").select("id", { count: "exact", head: true });
       const finalRole: Role = count === 0 ? "admin" : role;
-      const { error: pErr } = await supabase.from("profiles").insert({
+      const { error: pErr } = await supabase.from("profiles").upsert({
         id: userId, full_name: f.full_name, email: f.email, mobile: f.mobile, role: finalRole,
         class_label: f.class_label, board: f.board, subject: f.subject,
         child_name: f.child_name, child_student_id: f.child_student_id,
         institute_name: f.institute_name, city: f.city,
-      });
-      if (pErr) throw pErr;
+      }, { onConflict: "id" });
+      if (pErr) {
+        // Trigger should have created the row; warn but continue to dashboard
+        // so the user is not stuck on the register page.
+        console.warn("Profile upsert failed (trigger may have created it):", pErr.message);
+      }
       if (finalRole === "admin" && role !== "admin") setMsg("You are the first account, so you were made Admin. Redirecting…");
       router.push("/dashboard");
     } catch (err: any) { setMsg(err.message || "Registration failed."); }

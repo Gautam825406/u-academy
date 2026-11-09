@@ -17,8 +17,29 @@ export default function LoginPage() {
     e.preventDefault(); setBusy(true); setMsg("");
     try {
       const supabase = createClient();
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      // Self-heal: if this login has no profile row (old registration bug),
+      // create it now — after signIn the session is valid, so RLS allows
+      // inserting your own profile. First-ever profile becomes Admin.
+      const userId = data.user?.id;
+      if (userId) {
+        const { data: prof } = await supabase.from("profiles").select("id").eq("id", userId).single();
+        if (!prof) {
+          const meta = (data.user?.user_metadata || {}) as Record<string, string>;
+          const { count } = await supabase.from("profiles").select("id", { count: "exact", head: true });
+          await supabase.from("profiles").upsert({
+            id: userId,
+            full_name: meta.full_name || email.split("@")[0],
+            email, mobile: meta.mobile || "",
+            role: count === 0 ? "admin" : (meta.role || "student"),
+            class_label: meta.class_label || "Class 10", board: meta.board || "CBSE",
+            subject: meta.subject || "", child_name: meta.child_name || "",
+            child_student_id: meta.child_student_id || "",
+            institute_name: meta.institute_name || "", city: meta.city || "",
+          }, { onConflict: "id" });
+        }
+      }
       router.push("/dashboard"); router.refresh();
     } catch (err: any) { setMsg(err.message || "Login failed. Check your email and password."); }
     finally { setBusy(false); }
