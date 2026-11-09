@@ -48,7 +48,13 @@ export default function LoginPage() {
     e.preventDefault(); setBusy(true); setMsg("");
     try {
       const supabase = createClient();
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/auth/login` });
+      // Send the user to /auth/callback, which exchanges the emailed code
+      // for a session and forwards recovery users to /auth/reset-password.
+      // NEVER use localhost here — Supabase Site URL must be the live site.
+      const origin = window.location.origin.includes("localhost")
+        ? "https://u-academy-zeta.vercel.app"
+        : window.location.origin;
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${origin}/auth/callback` });
       if (error) throw error;
       setMsg("If that email is registered, a reset link was sent. An Admin can also reset your password from Dashboard > Users.");
     } catch (err: any) { setMsg(err.message || "Could not send reset link."); }
