@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -12,6 +12,14 @@ export default function LoginPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [forgot, setForgot] = useState(false);
+
+  // Show a clear message if a reset link failed (expired / already used).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "recovery_failed") {
+      setMsg("That reset link did not work — it may have expired or already been used. Click 'Forgot password?' again to request a fresh link, and click it only once.");
+    }
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setMsg("");

@@ -8,7 +8,10 @@ export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
   const type = searchParams.get("type");
-  const next = type === "recovery" ? "/auth/reset-password" : "/dashboard";
+  // Only the password-recovery flow uses /auth/callback in this app
+  // (email confirmation is OFF), so a code here is always a recovery code
+  // — even when Supabase's verify redirect drops the ?type=recovery param.
+  const next = type === "signup" || type === "invite" ? "/dashboard" : "/auth/reset-password";
   if (code) {
     let response = NextResponse.redirect(`${origin}${next}`);
     const supabase = createServerClient(
