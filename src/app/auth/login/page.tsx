@@ -1,11 +1,9 @@
 "use client";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -48,7 +46,14 @@ export default function LoginPage() {
           }, { onConflict: "id" });
         }
       }
-      router.push("/dashboard"); router.refresh();
+      // Wait for the session to be stored (cookies flushed) before
+      // leaving: navigating while the middleware still sees no session
+      // used to bounce the student straight back to login right after
+      // a successful sign-in. A full navigation also lets the middleware
+      // refresh/validate the fresh session on the way in.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Signed in, but no session was stored — please try logging in again.");
+      window.location.assign("/dashboard");
     } catch (err: any) { setMsg(err.message || "Login failed. Check your email and password."); }
     finally { setBusy(false); }
   }

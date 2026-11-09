@@ -121,6 +121,18 @@ export default function DashboardPage() {
   const [editForm, setEditForm] = useState<Record<string, string>>({});
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Session restoration: if the session arrives (or is refreshed) after
+  // mount — PWA launch, token refresh completing late, return from a
+  // payment — re-run the profile load. Only a genuine SIGNED_OUT event
+  // sends the user to login; a transient failure never does.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") loadProfile();
+      if (event === "SIGNED_OUT") router.push("/auth/login");
+    });
+    return () => subscription.unsubscribe();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
   // Cashfree return landing: /dashboard?section=batches&paid=1 (or payment=failed)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -133,7 +145,26 @@ export default function DashboardPage() {
   useEffect(() => { if (profile) loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [section, profile]);
 
   async function loadProfile() {
-    const { data: { user } } = await supabase.auth.getUser();
+    // Session restore (auto-logout fix): getSession() reads the stored
+    // session and refreshes an expired access token from the refresh-token
+    // cookie. Only when there is NO session at all — after a refresh
+    // attempt and one retry of the validating getUser() call — do we
+    // redirect to login. A single failed getUser() (network blip, refresh
+    // still in flight) used to log the student out instantly; it no longer
+    // does. Enrolments and account data are re-fetched from the DB by user
+    // id in loadAll(), so they survive any restore.
+    const { data: { session } } = await supabase.auth.getSession();
+    let user = session?.user ?? null;
+    if (!user) {
+      // No stored session yet — maybe the refresh is still settling.
+      await new Promise((r) => setTimeout(r, 800));
+      const retry = await supabase.auth.getSession();
+      user = retry.data.session?.user ?? null;
+    }
+    if (!user) {
+      const { data: { user: validated } } = await supabase.auth.getUser();
+      user = validated;
+    }
     if (!user) { router.push("/auth/login"); return; }
     let { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
     if (!data) {

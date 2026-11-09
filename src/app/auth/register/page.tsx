@@ -1,7 +1,6 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Role } from "@/lib/types";
 
@@ -13,7 +12,6 @@ const ROLES: { key: Role; label: string; desc: string }[] = [
 ];
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [role, setRole] = useState<Role>("student");
   const [showPw, setShowPw] = useState(false);
   const [msg, setMsg] = useState("");
@@ -118,7 +116,12 @@ export default function RegisterPage() {
         console.warn("Profile upsert failed (trigger may have created it):", pErr.message);
       }
       if (finalRole === "admin" && effectiveRole !== "admin") setMsg("You are the first account, so you were made Admin. Redirecting…");
-      router.push("/dashboard");
+      // Confirm the session is stored, then hard-navigate (see login page):
+      // a client-side push could reach the dashboard before the middleware
+      // saw the fresh session and bounce the new user back to login.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Account created, but no session was stored — please log in with your new account.");
+      window.location.assign("/dashboard");
     } catch (err: any) { setMsg(err.message || "Registration failed."); }
     finally { setBusy(false); }
   }
