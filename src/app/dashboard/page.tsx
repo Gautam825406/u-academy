@@ -509,19 +509,48 @@ export default function DashboardPage() {
         return;
       }
       if (data.free) { setMsg(`Enrolled in ${data.title || "the batch"} — it is free.`); loadAll(); return; }
-      // Cashfree hosted checkout: use the server-provided checkout_url —
-      // it points at the forms host matching the environment the order was
-      // created in (Production vs Sandbox). A Sandbox session opened on the
-      // Production forms page shows "Invalid form code: null", so never
-      // hard-code the Production host here and never redirect with a
-      // null/empty session id.
-      const checkoutUrl = data.checkout_url as string | undefined;
-      const link = data.payment_link as string | undefined;
+      // Cashfree hosted checkout — official JS SDK v3 ONLY.
+      // Root cause of "Invalid form code: null": the old code navigated the
+      // browser to https://payments.cashfree.com/forms?paymentSessionId=...
+      // — but /forms is Cashfree's separate no-code Payment Forms product.
+      // A PG payment_session_id is not a form code, so the Forms app found
+      // no form and showed "Invalid form code: null". The official docs
+      // (cashfree.com/docs/payments/online/web/redirect) say checkout opens
+      // ONLY via cashfree.checkout({ paymentSessionId, redirectTarget }).
+      // Never redirect, never guess a session id, never use payment_link
+      // (PG Create Order does not return one — that is a Payment Links
+      // field). The SDK mode MUST match the environment the order was
+      // created in (returned as cashfree_mode by the server).
       const sessionId = data.payment_session_id as string | undefined;
-      if (checkoutUrl && typeof checkoutUrl === "string" && checkoutUrl.startsWith("https://")) window.location.href = checkoutUrl;
-      else if (link) window.location.href = link;
-      else if (sessionId && sessionId !== "null" && sessionId !== "undefined") window.location.href = `https://payments.cashfree.com/forms?paymentSessionId=${encodeURIComponent(sessionId)}`;
-      else setMsg("Cashfree did not return a checkout session. Please try again or pay at the institute.");
+      const mode = data.cashfree_mode === "production" ? "production" : "sandbox";
+      if (!sessionId || sessionId === "null" || sessionId === "undefined") {
+        setMsg("Cashfree did not return a checkout session. Please try again or pay at the institute.");
+        return;
+      }
+      let cashfree: Awaited<ReturnType<typeof import("@cashfreepayments/cashfree-js").load>> = null;
+      try {
+        const { load } = await import("@cashfreepayments/cashfree-js");
+        cashfree = await load({ mode });
+      } catch {
+        setMsg("Could not load the Cashfree checkout. Check your connection and try again.");
+        return;
+      }
+      if (!cashfree) {
+        setMsg("Could not load the Cashfree checkout. Please try again.");
+        return;
+      }
+      // redirectTarget "_self": full-page hosted checkout, then Cashfree
+      // redirects back to the order's return_url (handled server-side by
+      // /api/cashfree/return, which verifies PAID before enrolling). The
+      // promise may never resolve once navigation starts — that is normal.
+      const result = await cashfree.checkout({ paymentSessionId: sessionId, redirectTarget: "_self" });
+      if (result?.error) {
+        const code = String(result.error.code || "");
+        if (code === "session_expired") setMsg("Your payment session expired — please tap Pay again for a fresh checkout.");
+        else if (code === "user_cancelled") setMsg("Payment cancelled — you can try again whenever you are ready.");
+        else if (code === "invalid_payment_session_id") setMsg("Cashfree could not start this checkout (invalid session). Please tap Pay again — if it keeps happening, ask Admin to check the Cashfree app mode.");
+        else setMsg(String(result.error.message || "Cashfree checkout could not be opened. Please try again."));
+      }
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : "Could not start the payment.");
     } finally { setPayBusy(""); }

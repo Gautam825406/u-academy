@@ -1,8 +1,12 @@
 // U++ Academy service worker — minimal offline-capable worker.
-// Cache-first for same-origin static assets, network-first for pages.
+// Stale-while-revalidate for same-origin static assets (serve the cached
+// chunk immediately, fetch a fresh copy in the background and update the
+// cache): pure cache-first served OLD dashboard JS for days after a deploy,
+// so installed-PWA users kept running the previous checkout code even
+// though the site had been redeployed. Network-first for pages.
 // API responses are NEVER cached (they are per-user and must not be
 // served stale — or to another session — from the cache).
-const CACHE = "u-academy-v2";
+const CACHE = "u-academy-v3";
 const STATIC_PATTERNS = ["/_next/static/", "/icon-", "/logo", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
@@ -34,17 +38,22 @@ self.addEventListener("fetch", (event) => {
     /\.(png|jpe?g|svg|ico|css|js|woff2?)$/.test(url.pathname);
 
   if (isStatic) {
-    // Cache-first for static assets (logo, icons, manifest, JS/CSS).
+    // Stale-while-revalidate for static assets (logo, icons, manifest,
+    // JS/CSS): serve the cached copy at once, but always fetch a fresh one
+    // in the background and store it, so the next load runs the newest
+    // deployed code. A pure cache-first strategy kept serving the old
+    // dashboard bundle to installed-PWA users after a redeploy.
     event.respondWith(
       caches.open(CACHE).then((cache) =>
-        cache.match(req).then(
-          (hit) =>
-            hit ||
-            fetch(req).then((res) => {
+        cache.match(req).then((hit) => {
+          const network = fetch(req)
+            .then((res) => {
               if (res.ok) cache.put(req, res.clone());
               return res;
             })
-        )
+            .catch(() => undefined);
+          return hit || network.then((res) => res || fetch(req));
+        })
       )
     );
   } else {

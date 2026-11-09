@@ -6,7 +6,13 @@ import { createClient } from "@/lib/supabase/server";
 // decides the subscription validity. Free plans enrol directly.
 // Creates a Cashfree PG order (api-version 2023-08-01) for a paid batch or
 // course, records a `payments` row (status 'created'), and returns the
-// payment_session_id / payment_link the student is redirected to.
+// payment_session_id + cashfree_mode ("production" | "sandbox").
+// The frontend opens checkout ONLY through the official Cashfree JS SDK
+// v3 (cashfree.checkout({ paymentSessionId, redirectTarget: "_self" })).
+// There is NO raw redirect URL for PG checkout: the old code navigated to
+// https://payments.cashfree.com/forms?paymentSessionId=... — but /forms is
+// Cashfree's separate no-code Payment Forms product, so a PG session id is
+// not a form code and Cashfree shows "Invalid form code: null".
 // Free items (price 0) enrol directly — no Cashfree call.
 // If Cashfree keys are not configured, returns 400 with an honest error
 // instead of pretending a payment happened.
@@ -161,21 +167,22 @@ export async function POST(request: NextRequest) {
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-    // The checkout session MUST exist and the checkout host MUST match the
-    // environment the order was created in: a Sandbox session id opened on
-    // the Production forms page (or vice versa) shows Cashfree's
-    // "Invalid form code: null". Never redirect with a null/empty session.
+    // The checkout session MUST exist. The frontend opens it ONLY via the
+    // official Cashfree JS SDK v3 — never via a hand-built URL (see the
+    // header comment: /forms is the Payment Forms product, not PG checkout).
+    // Return the SDK mode too: it MUST match the environment the order was
+    // created in, or the SDK rejects the session as invalid.
     const sessionId = typeof data.payment_session_id === "string" ? data.payment_session_id.trim() : "";
     if (!sessionId) {
       console.error(`[cashfree create-order] Cashfree ${base}/orders returned no payment_session_id for order ${orderId}; response keys: ${Object.keys(data || {}).join(",")}`);
       return NextResponse.json({ error: "Cashfree created the order but did not return a checkout session. Please try again — if it keeps happening, ask Admin to check the Cashfree app mode (Production/Test) in the Cashfree dashboard." }, { status: 502 });
     }
-    const checkoutHost = isProd ? "https://payments.cashfree.com" : "https://sandbox.cashfree.com";
+    // Diagnosability only: presence booleans + mode, never the session value.
+    console.log(`[cashfree create-order] order ${orderId} created; payment_session present=true mode=${isProd ? "production" : "sandbox"}`);
     return NextResponse.json({
       order_id: orderId,
       payment_session_id: sessionId,
-      payment_link: data.payment_link || null,
-      checkout_url: `${checkoutHost}/forms?paymentSessionId=${encodeURIComponent(sessionId)}`,
+      cashfree_mode: isProd ? "production" : "sandbox",
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not start the payment." }, { status: 500 });
