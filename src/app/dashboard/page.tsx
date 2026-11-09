@@ -51,6 +51,7 @@ export default function DashboardPage() {
   const [userRole, setUserRole] = useState<Record<string, string>>({});
   const [userChild, setUserChild] = useState<Record<string, string>>({});
   const [profEdit, setProfEdit] = useState<Record<string, string>>({});
+  const [inviteForm, setInviteForm] = useState({ full_name: "", email: "", mobile: "", role: "teacher", class_label: "Class 10", board: "CBSE", subject: "Mathematics" });
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   useEffect(() => { if (profile) loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [section, profile]);
@@ -79,7 +80,7 @@ export default function DashboardPage() {
   }
 
   async function loadAll() {
-    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries"];
+    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites"];
     const out: Record<string, Row[]> = {};
     for (const t of tables) {
       const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
@@ -228,6 +229,34 @@ export default function DashboardPage() {
     const child = userChild[s(row, "id")]; if (!child) return setMsg("Pick a student to link.");
     const { error } = await supabase.from("profiles").update({ child_student_id: child, child_name: nameOf(child) }).eq("id", row.id as string);
     if (error) setMsg(error.message); else { setMsg("Parent linked to child."); loadAll(); }
+  }
+  // ---- teacher onboarding (Admin) ----
+  async function reviewRequest(id: string, status: "approved" | "rejected") {
+    const { error } = await supabase.from("teacher_requests").update({ status, reviewed_by: profile?.id }).eq("id", id);
+    if (error) setMsg(error.message); else { setMsg(`Teacher request ${status}.`); loadAll(); }
+  }
+  async function createInvite(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    const f = inviteForm;
+    if (!f.full_name || !f.email) return setMsg("Name and email are required for an invite.");
+    const { error } = await supabase.from("onboarding_invites").insert({
+      full_name: f.full_name, email: f.email.trim(), mobile: f.mobile, role: f.role,
+      class_label: f.role === "student" ? f.class_label : null,
+      board: f.role === "student" ? f.board : null,
+      subject: f.role === "teacher" ? f.subject : null,
+      created_by: profile?.id,
+    });
+    if (error) { setMsg(error.message); return; }
+    if (f.role === "teacher") {
+      // So the invitee also sees their request as approved on the register page.
+      await supabase.from("teacher_requests").insert({
+        full_name: f.full_name, email: f.email.trim(), mobile: f.mobile, subject: f.subject,
+        status: "approved", reviewed_by: profile?.id,
+      });
+    }
+    setInviteForm({ full_name: "", email: "", mobile: "", role: "teacher", class_label: "Class 10", board: "CBSE", subject: "Mathematics" });
+    setMsg(`Invite created for ${f.email}. Ask them to Register on the live site with this exact email.`);
+    loadAll();
   }
   // ---- profile edit ----
   async function saveProfile(e: React.FormEvent) {
@@ -557,6 +586,33 @@ export default function DashboardPage() {
     if (section === "users") return (
       <div className="mt-4 space-y-2">
         <p className="card mt-3 text-sm text-slate-600">Admin only. New accounts are created by the user registering (there is no admin password reset from this panel — use Forgot password on the login page). Here you can change roles, block/unblock, link a parent to a child, and see each user&rsquo;s batch enrolments.</p>
+        {/* ---- Teacher onboarding: approve requests ---- */}
+        <div className="card mt-3"><h3 className="font-extrabold">Teacher requests — approve / reject</h3>
+          <p className="mt-1 text-sm text-slate-600">Teachers apply from the landing page (“Join as a Teacher”). Approve them here; they can then register with the same email and their Teacher role is confirmed.</p>
+          <div className="mt-3 space-y-2">
+            {(data.teacher_requests || []).length === 0 && <p className="text-sm text-slate-500">No teacher requests yet.</p>}
+            {(data.teacher_requests || []).map(r => <div key={s(r, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-sm"><span><b>{s(r, "full_name")}</b> — {s(r, "email")} · {s(r, "mobile")} · {s(r, "subject")} · {s(r, "experience_years") ?? "—"} yrs · {s(r, "qualification") || "—"}</span><span className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${s(r, "status") === "approved" ? "bg-brand-tint text-brand-dark" : s(r, "status") === "rejected" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-800"}`}>{s(r, "status")}</span>{s(r, "status") === "pending" && <><button onClick={() => reviewRequest(s(r, "id"), "approved")} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Approve</button><button onClick={() => reviewRequest(s(r, "id"), "rejected")} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-red-700">Reject</button></>}</span></div>)}
+          </div>
+        </div>
+        {/* ---- Admin direct onboarding: invite a teacher / student ---- */}
+        <form onSubmit={createInvite} className="card mt-3"><h3 className="font-extrabold">Onboard teacher / student</h3>
+          <p className="mt-1 text-sm text-slate-600">Invite created. Ask the teacher/student to <b>Register on the live site with this exact email</b> — their account will be linked to this invite and they will be onboarded with the role you chose. <b>Admin cannot set their password — they choose it at registration.</b></p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div><label className="label">Full name</label><input required className="input" value={inviteForm.full_name} onChange={e => setInviteForm({ ...inviteForm, full_name: e.target.value })} /></div>
+            <div><label className="label">Email</label><input required type="email" className="input" value={inviteForm.email} onChange={e => setInviteForm({ ...inviteForm, email: e.target.value })} /></div>
+            <div><label className="label">Mobile number</label><input className="input" value={inviteForm.mobile} onChange={e => setInviteForm({ ...inviteForm, mobile: e.target.value })} /></div>
+            {sel("Role to onboard", inviteForm.role, v => setInviteForm({ ...inviteForm, role: v }), [{ v: "teacher", l: "Teacher" }, { v: "student", l: "Student" }])}
+            {inviteForm.role === "teacher" && <>{sel("Subject", inviteForm.subject, v => setInviteForm({ ...inviteForm, subject: v }), ["Mathematics","Science","Physics","Chemistry","Biology","English","Social Science","Accounts","Economics"].map(c => ({ v: c, l: c })))}</>}
+            {inviteForm.role === "student" && <>{sel("Class", inviteForm.class_label, v => setInviteForm({ ...inviteForm, class_label: v }), ["Class 6","Class 7","Class 8","Class 9","Class 10","Class 11","Class 12"].map(c => ({ v: c, l: c })))}{sel("Board", inviteForm.board, v => setInviteForm({ ...inviteForm, board: v }), ["CBSE","ICSE","State Board","Other"].map(c => ({ v: c, l: c })))}</>}
+          </div>
+          <button className="btn-brand mt-3 !py-2.5 text-sm">Create invite</button>
+        </form>
+        <div className="card mt-3"><h3 className="font-extrabold">Invites sent</h3>
+          <div className="mt-2 space-y-2">
+            {(data.onboarding_invites || []).length === 0 && <p className="text-sm text-slate-500">No invites yet.</p>}
+            {(data.onboarding_invites || []).map(inv => <div key={s(inv, "id")} className="rounded-xl border p-3 text-sm"><b>{s(inv, "full_name")}</b> — {s(inv, "email")} · <span className="capitalize">{s(inv, "role")}</span>{s(inv, "subject") ? ` · ${s(inv, "subject")}` : ""}{s(inv, "class_label") ? ` · ${s(inv, "class_label")} ${s(inv, "board")}` : ""} · <span className={`rounded-full px-2 py-1 text-xs font-bold ${s(inv, "status") === "registered" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(inv, "status")}</span></div>)}
+          </div>
+        </div>
         {profiles.length === 0 && empty("No users yet.")}
         {profiles.map(u => { const uid = s(u, "id"); const enrols = (data.enrollments || []).filter(e => s(e, "student_id") === uid); return <div key={uid} className="card !p-4"><b className="text-sm">{s(u, "full_name")}</b><p className="text-xs text-slate-500">{s(u, "email")} · {s(u, "mobile")} · {s(u, "class_label")} {s(u, "board")} · {s(u, "subject")} · Enrolled in: {enrols.length ? enrols.map(e => batchName(s(e, "batch_id"))).join(", ") : "—"}{s(u, "role") === "parent" && s(u, "child_student_id") ? ` · Child: ${nameOf(s(u, "child_student_id"))}` : ""}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${u.is_blocked ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{u.is_blocked ? "Blocked" : "Active"}</span>

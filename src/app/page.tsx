@@ -41,6 +41,25 @@ export default function Landing() {
   const [enq, setEnq] = useState({ student_name:"", parent_mobile:"", class_label:"Class 10", board:"CBSE", interested_in:"Board Excellence (Classes 9–10)", notes:"" });
   const [enqMsg, setEnqMsg] = useState("");
   const [enqText, setEnqText] = useState("");
+  const [teach, setTeach] = useState({ full_name:"", email:"", mobile:"", subject:"Mathematics", experience_years:"", qualification:"" });
+  const [teachMsg, setTeachMsg] = useState("");
+
+  async function submitTeacherRequest(e: React.FormEvent) {
+    e.preventDefault(); setTeachMsg("");
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.from("teacher_requests").insert({
+        full_name: teach.full_name, email: teach.email, mobile: teach.mobile,
+        subject: teach.subject, experience_years: teach.experience_years ? Number(teach.experience_years) : null,
+        qualification: teach.qualification,
+      });
+      if (error) throw error;
+      setTeachMsg("Request sent — Admin will review it. Once approved, register on this site with the same email and your Teacher role will be confirmed.");
+      setTeach({ full_name:"", email:"", mobile:"", subject:"Mathematics", experience_years:"", qualification:"" });
+    } catch {
+      setTeachMsg("Could not send your request — please check your connection and try again, or contact the academy office directly.");
+    }
+  }
 
   async function submitEnquiry(e: React.FormEvent) {
     e.preventDefault();
@@ -64,6 +83,7 @@ export default function Landing() {
             <a href="#courses" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Courses</a>
             <a href="#app" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Student App</a>
             <a href="#why" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Why U++</a>
+            <a href="#teach" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Teach with us</a>
             <a href="#faq" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">FAQ</a>
           </nav>
           <Link href="/auth/login" className="btn-ghost !px-4 !py-2 text-sm">Login</Link>
@@ -196,6 +216,28 @@ export default function Landing() {
         </div>
         <h2 id="faq" className="mt-14 text-center text-3xl font-extrabold">Parents usually ask us…</h2>
         <div className="mx-auto mt-6 max-w-3xl space-y-3">{FAQS.map(([q,a]) => <details key={q} className="card !p-4"><summary className="cursor-pointer font-bold">{q}</summary><p className="mt-2 text-sm text-slate-600">{a}</p></details>)}</div>
+      </section>
+
+      {/* JOIN AS A TEACHER */}
+      <section id="teach" className="mx-auto max-w-6xl px-5 pb-16">
+        <div className="grid gap-8 rounded-[28px] border bg-white p-8 shadow-sm md:grid-cols-2">
+          <div><p className="text-xs font-extrabold uppercase tracking-widest text-brand">Teach with U++</p><h2 className="mt-2 text-3xl font-extrabold">Join as a Teacher</h2><p className="mt-2 text-slate-600">Teach Maths, Science, English or Commerce to small, focused batches — with the student app doing the paperwork: attendance, assignments, tests and parent updates.</p>
+          <ul className="mt-5 space-y-2 text-sm font-semibold text-slate-600"><li>✓ Small batches — every student known by name</li><li>✓ Recorded lectures and ready-made test patterns</li><li>✓ Admin reviews every application before onboarding</li></ul>
+          <p className="mt-5 text-sm text-slate-500">Already approved by Admin? <Link href="/auth/register" className="font-bold text-brand">Register here</Link> with the same email — your Teacher role will be confirmed automatically.</p></div>
+          <form onSubmit={submitTeacherRequest} className="rounded-2xl bg-slate-50 p-6">
+            <h3 className="font-extrabold">Teacher application</h3><p className="text-sm text-slate-500">Send your request — the Admin reviews it in the dashboard.</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div><label className="label">Full name</label><input required className="input" value={teach.full_name} onChange={e=>setTeach({...teach,full_name:e.target.value})} /></div>
+              <div><label className="label">Email</label><input required type="email" className="input" value={teach.email} onChange={e=>setTeach({...teach,email:e.target.value})} /></div>
+              <div><label className="label">Mobile number</label><input required className="input" value={teach.mobile} onChange={e=>setTeach({...teach,mobile:e.target.value})} /></div>
+              <div><label className="label">Subject you teach</label><select className="input" value={teach.subject} onChange={e=>setTeach({...teach,subject:e.target.value})}>{["Mathematics","Science","Physics","Chemistry","Biology","English","Social Science","Accounts","Economics"].map(c=><option key={c}>{c}</option>)}</select></div>
+              <div><label className="label">Experience (years)</label><input type="number" min="0" className="input" value={teach.experience_years} onChange={e=>setTeach({...teach,experience_years:e.target.value})} placeholder="e.g. 5" /></div>
+              <div><label className="label">Qualification</label><input className="input" value={teach.qualification} onChange={e=>setTeach({...teach,qualification:e.target.value})} placeholder="e.g. B.Sc. Maths, B.Ed." /></div>
+            </div>
+            <button className="btn-brand mt-4 w-full">Send teacher request</button>
+            {teachMsg && <p className="mt-3 rounded-xl bg-brand-tint p-3 text-sm font-semibold text-brand-dark">{teachMsg}</p>}
+          </form>
+        </div>
       </section>
 
       {/* ENQUIRY */}

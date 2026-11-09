@@ -162,6 +162,30 @@ create table if not exists public.enquiries (
   interested_in text, notes text, created_at timestamptz not null default now()
 );
 
+-- ---------- Teacher onboarding: requests + Admin invites ----------
+-- A teacher asks to join from the landing page (public form, no login).
+-- Admin approves/rejects in Dashboard > Users. Admin can also directly
+-- invite a teacher/student; the invitee then registers themselves with
+-- the exact email — Admin cannot create auth accounts or set passwords
+-- with only the anon key (no service-role key is configured).
+create table if not exists public.teacher_requests (
+  id uuid primary key default gen_random_uuid(),
+  full_name text not null, email text not null, mobile text,
+  subject text, experience_years int, qualification text,
+  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  reviewed_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+create table if not exists public.onboarding_invites (
+  id uuid primary key default gen_random_uuid(),
+  full_name text not null, email text not null, mobile text,
+  role text not null check (role in ('teacher','student')),
+  class_label text, board text, subject text,
+  status text not null default 'invited' check (status in ('invited','registered')),
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+
 -- ---------- Role permissions: 14 features x 4 roles ----------
 create table if not exists public.role_permissions (
   id uuid primary key default gen_random_uuid(),
@@ -204,6 +228,22 @@ alter table public.enquiries enable row level security;
 create policy "anon insert enquiries" on public.enquiries for insert with check (true);
 create policy "auth read enquiries" on public.enquiries for select using (auth.role() = 'authenticated');
 
+-- Teacher onboarding RLS.
+-- teacher_requests: anyone may INSERT (public "Join as a Teacher" form) and
+-- anyone may SELECT by email so the register page can check an applicant's
+-- status before sign-up; only authenticated users may UPDATE (Admin approve/reject).
+alter table public.teacher_requests enable row level security;
+create policy "public insert teacher_requests" on public.teacher_requests for insert with check (true);
+create policy "public read teacher_requests" on public.teacher_requests for select using (true);
+create policy "auth update teacher_requests" on public.teacher_requests for update using (auth.role() = 'authenticated');
+-- onboarding_invites: only authenticated users may read/write (Admin creates
+-- them in Dashboard > Users; the register page re-checks them after sign-up,
+-- once the invitee has a session, and marks the invite 'registered').
+alter table public.onboarding_invites enable row level security;
+create policy "auth read onboarding_invites" on public.onboarding_invites for select using (auth.role() = 'authenticated');
+create policy "auth write onboarding_invites" on public.onboarding_invites for insert with check (auth.role() = 'authenticated');
+create policy "auth update onboarding_invites" on public.onboarding_invites for update using (auth.role() = 'authenticated');
+
 -- ---------- Indexes ----------
 create index if not exists idx_enrollments_batch on public.enrollments(batch_id);
 create index if not exists idx_enrollments_student on public.enrollments(student_id);
@@ -214,6 +254,8 @@ create index if not exists idx_attendance_student on public.attendance(student_i
 create index if not exists idx_fees_student on public.fees(student_id);
 create index if not exists idx_doubts_student on public.doubts(student_id);
 create index if not exists idx_notifications_user on public.notifications(user_id);
+create index if not exists idx_teacher_requests_email on public.teacher_requests(email);
+create index if not exists idx_onboarding_invites_email on public.onboarding_invites(email);
 
 -- ---------- Storage (run in Dashboard > Storage, or via SQL) ----------
 -- Create a public bucket named "materials" in Storage, then add this policy in
