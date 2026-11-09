@@ -52,6 +52,22 @@ export default function DashboardPage() {
   const [userChild, setUserChild] = useState<Record<string, string>>({});
   const [profEdit, setProfEdit] = useState<Record<string, string>>({});
   const [inviteForm, setInviteForm] = useState({ full_name: "", email: "", mobile: "", role: "teacher", class_label: "Class 10", board: "CBSE", subject: "Mathematics" });
+  // ClassWalla-style state
+  const [courseForm, setCourseForm] = useState({ title: "", class_label: "Class 10", subject: "", description: "", price: "", is_paid: false, bundle_name: "" });
+  const [courseId, setCourseId] = useState("");
+  const [courseStu, setCourseStu] = useState("");
+  const [courseCoupon, setCourseCoupon] = useState("");
+  const [ttForm, setTtForm] = useState({ batch_id: "", day_of_week: "Monday", start_time: "", end_time: "", subject: "", teacher_id: "" });
+  const [feeMode, setFeeMode] = useState("Cash");
+  const [feeUpiRef, setFeeUpiRef] = useState("");
+  const [feeCoupon, setFeeCoupon] = useState("");
+  const [feeUpiId, setFeeUpiId] = useState("");
+  const [cert, setCert] = useState<null | { student: string; test: string; marks: number; total: number; date: string }>(null);
+  const [couponForm, setCouponForm] = useState({ code: "", discount_percent: "", valid_until: "" });
+  const [leadStatus, setLeadStatus] = useState<Record<string, string>>({});
+  const [leadFollow, setLeadFollow] = useState<Record<string, string>>({});
+  const [leadEmail, setLeadEmail] = useState<Record<string, string>>({});
+  const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   useEffect(() => { if (profile) loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [section, profile]);
@@ -80,7 +96,7 @@ export default function DashboardPage() {
   }
 
   async function loadAll() {
-    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites"];
+    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments"];
     const out: Record<string, Row[]> = {};
     for (const t of tables) {
       const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
@@ -187,12 +203,68 @@ export default function DashboardPage() {
     if (!feeStu || !feeAmt) return setMsg("Pick a student and enter an amount.");
     const { count } = await supabase.from("fees").select("id", { count: "exact", head: true });
     const receipt = `U++-2026-${String((count || 0) + 1).padStart(4, "0")}`;
-    const { error } = await supabase.from("fees").insert({ student_id: feeStu, batch_id: feeBatch || null, amount: Number(feeAmt), due_month: feeMonth || "", status: feeStatus, receipt_no: receipt, paid_at: feeStatus === "paid" ? new Date().toISOString() : null, created_by: profile?.id });
-    if (error) setMsg(error.message); else { setMsg(`Fee saved. Receipt ${receipt}.`); setFeeAmt(""); setFeeMonth(""); loadAll(); }
+    const base = Number(feeAmt);
+    const cp = feeCoupon ? findCoupon(feeCoupon) : null;
+    const finalAmt = cp ? Math.round(base * (1 - n(cp, "discount_percent") / 100)) : base;
+    const { error } = await supabase.from("fees").insert({ student_id: feeStu, batch_id: feeBatch || null, amount: finalAmt, due_month: feeMonth || "", status: feeStatus, receipt_no: receipt, paid_at: feeStatus === "paid" ? new Date().toISOString() : null, payment_mode: feeMode, upi_reference: feeUpiRef || null, coupon_code: feeCoupon || null, created_by: profile?.id });
+    if (error) setMsg(error.message); else { setMsg(`Fee saved. Receipt ${receipt}.` + (cp ? ` Coupon ${feeCoupon} applied (${n(cp, "discount_percent")}% off): ₹${base} → ₹${finalAmt}.` : "") + (feeMode === "UPI" ? " Recorded as a UPI payment — no online gateway is connected, so collect it on your UPI ID and keep the reference above." : "")); setFeeAmt(""); setFeeMonth(""); setFeeCoupon(""); setFeeUpiRef(""); loadAll(); }
   }
   async function markPaid(feeId: string) {
     const { error } = await supabase.from("fees").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", feeId);
     if (error) setMsg(error.message); else { setMsg("Marked as paid."); loadAll(); }
+  }
+  // ---- ClassWalla: coupons / courses / timetable / leads ----
+  function findCoupon(code: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    return (data.coupons || []).find(x => s(x, "code").toLowerCase() === code.trim().toLowerCase() && String(x.is_active) !== "false" && (!s(x, "valid_until") || s(x, "valid_until") >= today)) || null;
+  }
+  async function createCourse(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!courseForm.title) return setMsg("Course title is required.");
+    const { error } = await supabase.from("courses").insert({ title: courseForm.title, class_label: courseForm.class_label, subject: courseForm.subject, description: courseForm.description, price: Number(courseForm.price || 0), is_paid: courseForm.is_paid, bundle_name: courseForm.bundle_name || null, created_by: profile?.id });
+    if (error) setMsg(error.message); else { setMsg("Course saved."); setCourseForm({ title: "", class_label: "Class 10", subject: "", description: "", price: "", is_paid: false, bundle_name: "" }); loadAll(); }
+  }
+  async function enrolCourse() {
+    if (!courseId || !courseStu) return setMsg("Pick a course and a student.");
+    const course = (data.courses || []).find(c => s(c, "id") === courseId);
+    const base = course ? n(course, "price") : 0;
+    const cp = courseCoupon ? findCoupon(courseCoupon) : null;
+    if (courseCoupon && !cp) return setMsg(`Coupon ${courseCoupon} is not valid (check the code, expiry or active status).`);
+    const paid = cp ? Math.round(base * (1 - n(cp, "discount_percent") / 100)) : base;
+    const { error } = await supabase.from("course_enrollments").insert({ course_id: courseId, student_id: courseStu, price_paid: paid, coupon_code: courseCoupon || null });
+    if (error) setMsg(error.message); else { setMsg(`Enrolled ${nameOf(courseStu)} into ${course ? s(course, "title") : "course"} — ₹${paid} paid${cp ? ` (coupon ${courseCoupon} applied)` : ""}.`); setCourseCoupon(""); loadAll(); }
+  }
+  async function createTimetable(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!ttForm.batch_id || !ttForm.start_time || !ttForm.end_time) return setMsg("Pick a batch and start/end times.");
+    const { error } = await supabase.from("timetable").insert({ batch_id: ttForm.batch_id, day_of_week: ttForm.day_of_week, start_time: ttForm.start_time, end_time: ttForm.end_time, subject: ttForm.subject, teacher_id: ttForm.teacher_id || null });
+    if (error) setMsg(error.message); else { setMsg("Timetable row saved."); loadAll(); }
+  }
+  async function createCoupon(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!couponForm.code || !couponForm.discount_percent) return setMsg("Coupon code and % off are required.");
+    const { error } = await supabase.from("coupons").insert({ code: couponForm.code.trim().toUpperCase(), discount_percent: Number(couponForm.discount_percent), valid_until: couponForm.valid_until || null, created_by: profile?.id });
+    if (error) setMsg(error.message); else { setMsg(`Coupon ${couponForm.code.trim().toUpperCase()} created.`); setCouponForm({ code: "", discount_percent: "", valid_until: "" }); loadAll(); }
+  }
+  async function toggleCoupon(row: Row) {
+    const { error } = await supabase.from("coupons").update({ is_active: String(row.is_active) === "false" }).eq("id", row.id as string);
+    if (error) setMsg(error.message); else loadAll();
+  }
+  async function updateLead(id: string) {
+    const payload: Record<string, unknown> = {};
+    if (leadStatus[id]) payload.status = leadStatus[id];
+    if (leadFollow[id]) payload.follow_up_date = leadFollow[id];
+    if (!Object.keys(payload).length) return setMsg("Pick a status or a follow-up date first.");
+    const { error } = await supabase.from("enquiries").update(payload).eq("id", id);
+    if (error) setMsg(error.message); else { setMsg("Lead updated."); loadAll(); }
+  }
+  async function convertLead(q: Row) {
+    const email = (leadEmail[s(q, "id")] || "").trim();
+    if (!email) return setMsg("Enter the student's email for the invite first.");
+    const { error } = await supabase.from("onboarding_invites").insert({ full_name: s(q, "student_name"), email, mobile: s(q, "parent_mobile"), role: "student", class_label: s(q, "class_label") || "Class 10", board: s(q, "board") || "CBSE", created_by: profile?.id });
+    if (error) { setMsg(error.message); return; }
+    await supabase.from("enquiries").update({ status: "enrolled" }).eq("id", s(q, "id"));
+    setMsg(`Invite created for ${email} — ask them to Register with that exact email. Lead marked enrolled.`); loadAll();
   }
   // ---- doubts ----
   async function askDoubt(e: React.FormEvent) {
@@ -332,14 +404,57 @@ export default function DashboardPage() {
         <main className="min-w-0 flex-1">
           {msg && <p className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{msg}</p>}
           {childProfile && <p className="mb-3 rounded-xl bg-brand-tint p-3 text-sm font-bold text-brand-dark">Parent view — showing your child {effectiveName}&rsquo;s fees, attendance, tests and assignments below.</p>}
-          {section === "overview" && (
+          {cert && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="w-full max-w-lg rounded-3xl border-4 border-amber-400 bg-white p-8 text-center shadow-xl">
+            <p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">U++ Academy · {profile.institute_name || "U++ Academy"}</p>
+            <h2 className="mt-2 text-3xl font-extrabold">Certificate of Achievement</h2>
+            <p className="mt-4 text-sm text-slate-600">This certificate is awarded to</p>
+            <p className="mt-1 text-2xl font-extrabold">{cert.student}</p>
+            <p className="mt-3 text-sm text-slate-600">for scoring <b>{cert.marks} / {cert.total}</b> ({Math.round(cert.marks / (cert.total || 1) * 100)}%) in</p>
+            <p className="mt-1 text-lg font-bold">{cert.test}</p>
+            <p className="mt-3 text-xs text-slate-500">Date: {cert.date || new Date().toLocaleDateString()} · U++ Academy</p>
+            <div className="mt-6 flex justify-center gap-2"><button onClick={() => window.print()} className="btn-brand !py-2.5 text-sm">Print certificate</button><button onClick={() => setCert(null)} className="rounded-xl border px-4 py-2.5 text-sm font-bold">Close</button></div>
+          </div></div>}
+          {section === "overview" && (() => {
+            const today = new Date().toISOString().slice(0, 10);
+            const monthKey = today.slice(0, 7);
+            const myFees = (data.fees || []).filter(f => isStaff || s(f, "student_id") === effectiveId);
+            const collectedMonth = myFees.filter(f => s(f, "status") === "paid" && (s(f, "paid_at") || s(f, "created_at") || "").startsWith(monthKey)).reduce((a, f) => a + n(f, "amount"), 0);
+            const pendingFees = myFees.filter(f => s(f, "status") === "pending").reduce((a, f) => a + n(f, "amount"), 0);
+            const attToday = (data.attendance || []).filter(a => s(a, "att_date") === today && (isStaff || s(a, "student_id") === effectiveId));
+            const attPct = attToday.length ? Math.round(attToday.filter(a => s(a, "status") === "present").length / attToday.length * 100) : 0;
+            const newLeads = (data.enquiries || []).filter(q => !s(q, "status") || s(q, "status") === "new").length;
+            const upcoming = (data.live_classes || []).filter(c => s(c, "starts_at") && new Date(s(c, "starts_at")) >= new Date()).sort((a, b) => s(a, "starts_at").localeCompare(s(b, "starts_at"))).slice(0, 3);
+            const absentToday = attToday.filter(a => s(a, "status") === "absent");
+            const overdueFees = myFees.filter(f => s(f, "status") === "pending");
+            const pendingReqs = (data.teacher_requests || []).filter(r => s(r, "status") === "pending");
+            const openDoubts = (data.doubts || []).filter(d => s(d, "status") === "open");
+            const kpis: [string, string][] = [
+              ["Total Students", String(isStaff ? students.length : 1)],
+              ["Fees Collected This Month", `₹${collectedMonth}`],
+              ["Fees Due / Pending", `₹${pendingFees}`],
+              ["Attendance Today", attToday.length ? `${attPct}%` : "—"],
+              ["New Leads", String(newLeads)],
+              ["Pending Doubts", String(openDoubts.length)],
+            ];
+            return (
             <div>
               <div className="rounded-3xl bg-gradient-to-r from-brand to-brand-dark p-6 text-white">
-                <p className="text-xs font-extrabold uppercase tracking-widest text-amber-300">Welcome back</p>
-                <h1 className="mt-1 text-2xl font-extrabold">Namaste, {profile.full_name.split(" ")[0]} — {profile.role === "student" ? "your classes, lectures and tests are ready." : profile.role === "teacher" ? "your batches and evaluation queue are ready." : profile.role === "parent" ? "your child's progress is ready to check." : "the institute is ready to manage."}</h1>
-                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {[["Batches", counts.batches ?? 0],["Lectures", counts.lectures ?? 0],["Assignments", counts.assignments ?? 0],["Tests", counts.tests ?? 0]].map(([l,v]) => <div key={l as string} className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{v}</b><span className="block text-xs font-bold opacity-80">{l}</span></div>)}
+                <p className="text-xs font-extrabold uppercase tracking-widest text-amber-300">Today · U++ Academy</p>
+                <h1 className="mt-1 text-2xl font-extrabold">Namaste, {profile.full_name.split(" ")[0]} — here is your institute today.</h1>
+                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {kpis.map(([l, v]) => <div key={l} className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{v}</b><span className="block text-xs font-bold opacity-80">{l}</span></div>)}
                 </div>
+              </div>
+              <div className="card mt-5"><h3 className="font-extrabold">Upcoming live classes</h3>
+                {upcoming.length === 0 ? <p className="mt-2 text-sm text-slate-500">No live classes scheduled ahead. Schedule one in Live Classes.</p> : <ul className="mt-2 space-y-1 text-sm">{upcoming.map(c => <li key={s(c, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(c, "title")}</b> · {s(c, "subject")}</span><span className="text-slate-500">{new Date(s(c, "starts_at")).toLocaleString()}</span></li>)}</ul>}
+              </div>
+              <div className="card mt-5"><h3 className="font-extrabold">To-do — needs your attention</h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Absent today: <b>{absentToday.length}</b>{absentToday.length ? ` — ${absentToday.map(a => nameOf(s(a, "student_id"))).join(", ")}` : ""}</span><button onClick={() => openSection("attendance")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Attendance →</button></li>
+                  <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Overdue / pending fees: <b>{overdueFees.length}</b> (₹{pendingFees})</span><button onClick={() => openSection("fees")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Fees →</button></li>
+                  <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Pending teacher requests: <b>{pendingReqs.length}</b></span><button onClick={() => openSection("users")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Users →</button></li>
+                  <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Unanswered doubts: <b>{openDoubts.length}</b></span><button onClick={() => openSection("doubts")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Doubts →</button></li>
+                </ul>
               </div>
               <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -347,7 +462,8 @@ export default function DashboardPage() {
               </div>
               <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are recorded manually in Fees &amp; Receipts — no online payment gateway yet.</p></div>
             </div>
-          )}
+            );
+          })()}
 
           {section === "profile" && (
             <div className="card"><h2 className="text-xl font-extrabold">Profile</h2>
@@ -410,6 +526,29 @@ export default function DashboardPage() {
           {sel("Student", enrolStudent, setEnrolStudent, students.map(t => ({ v: s(t, "id"), l: `${s(t, "full_name")} (${s(t, "class_label")})` })))}
           <div className="flex items-end"><button onClick={enrol} className="btn-brand !py-2.5 text-sm">Enrol</button></div>
         </div></div>}
+        <div className="card mt-3"><h3 className="font-extrabold">Courses — recorded courses, bundles &amp; pricing</h3>
+          <p className="mt-1 text-sm text-slate-600">Create paid or free courses and enrol students into them (with a coupon code for a discount). A bundle groups courses under one name, e.g. “Board Excellence Pack”.</p>
+          {isStaff && <form onSubmit={createCourse} className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div><label className="label">Course title</label><input required className="input" value={courseForm.title} onChange={e => setCourseForm({ ...courseForm, title: e.target.value })} /></div>
+            {sel("Class", courseForm.class_label, v => setCourseForm({ ...courseForm, class_label: v }), ["Class 6","Class 7","Class 8","Class 9","Class 10","Class 11","Class 12"].map(c => ({ v: c, l: c })))}
+            <div><label className="label">Subject</label><input className="input" value={courseForm.subject} onChange={e => setCourseForm({ ...courseForm, subject: e.target.value })} /></div>
+            <div><label className="label">Price (₹, 0 = free)</label><input type="number" className="input" value={courseForm.price} onChange={e => setCourseForm({ ...courseForm, price: e.target.value })} /></div>
+            <div><label className="label">Bundle name (optional)</label><input className="input" value={courseForm.bundle_name} onChange={e => setCourseForm({ ...courseForm, bundle_name: e.target.value })} placeholder="e.g. Board Excellence Pack" /></div>
+            <div className="flex items-end gap-2"><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={courseForm.is_paid} onChange={e => setCourseForm({ ...courseForm, is_paid: e.target.checked })} /> Paid course</label></div>
+            <div className="sm:col-span-2"><label className="label">Description</label><input className="input" value={courseForm.description} onChange={e => setCourseForm({ ...courseForm, description: e.target.value })} /></div>
+            <div className="sm:col-span-2"><button className="btn-brand !py-2.5 text-sm">Save course</button></div>
+          </form>}
+          {isStaff && <div className="mt-3 grid gap-3 sm:grid-cols-4">
+            {sel("Course", courseId, setCourseId, (data.courses || []).map(c => ({ v: s(c, "id"), l: `${s(c, "title")} — ₹${String(c.price ?? 0)}` })))}
+            {sel("Student", courseStu, setCourseStu, students.map(x => ({ v: s(x, "id"), l: s(x, "full_name") })))}
+            <div><label className="label">Coupon code (optional)</label><input className="input" value={courseCoupon} onChange={e => setCourseCoupon(e.target.value)} placeholder="e.g. UPLUS10" /></div>
+            <div className="flex items-end"><button onClick={enrolCourse} className="btn-brand !py-2.5 text-sm">Enrol into course</button></div>
+          </div>}
+          <div className="mt-3 space-y-2">
+            {(data.courses || []).length === 0 && <p className="text-sm text-slate-500">No courses yet.</p>}
+            {(data.courses || []).map(c => { const enrolled = (data.course_enrollments || []).filter(e => s(e, "course_id") === s(c, "id")); return <div key={s(c, "id")} className="rounded-xl border p-3 text-sm"><b>{s(c, "title")}</b> — {s(c, "class_label")} · {s(c, "subject")}{s(c, "bundle_name") ? ` · Bundle: ${s(c, "bundle_name")}` : ""} · {s(c, "is_paid") === "true" ? `₹${String(c.price ?? 0)} (paid)` : "Free"} · {enrolled.length} enrolled{s(c, "description") ? ` · ${s(c, "description")}` : ""}<p className="text-xs text-slate-500">{enrolled.length ? enrolled.map(e => `${nameOf(s(e, "student_id"))} (₹${String(e.price_paid ?? 0)}${s(e, "coupon_code") ? `, coupon ${s(e, "coupon_code")}` : ""})`).join(", ") : "Nobody enrolled yet."}</p></div>; })}
+          </div>
+        </div>
         <div className="mt-4 space-y-2">
           {batches.length === 0 && empty("No batches yet — create your first batch above.")}
           {batches.map(b => {
@@ -507,7 +646,7 @@ export default function DashboardPage() {
                 <div><label className="label">Marks</label><input type="number" className="input" value={testMarks[tid] || ""} onChange={e => setTestMarks({ ...testMarks, [tid]: e.target.value })} /></div>
                 <div><label className="label">Remarks</label><input className="input" value={testRem[tid] || ""} onChange={e => setTestRem({ ...testRem, [tid]: e.target.value })} /></div>
                 <div className="flex items-end"><button onClick={() => enterMarks(tid)} className="btn-brand !py-2.5 text-xs">Save marks</button></div></div></div>}
-              <ul className="mt-2 space-y-1 text-sm">{visible.length === 0 ? <li className="text-slate-500">{isStaff ? "No results entered yet." : "Your result is not entered yet."}</li> : visible.map(r => <li key={s(r, "id")} className="rounded-lg bg-slate-50 px-3 py-2">{nameOf(s(r, "student_id"))} — <b>{String(r.marks ?? "—")} / {String(t.total_marks ?? "")}</b>{s(r, "remarks") ? ` · ${s(r, "remarks")}` : ""}</li>)}</ul>
+              <ul className="mt-2 space-y-1 text-sm">{visible.length === 0 ? <li className="text-slate-500">{isStaff ? "No results entered yet." : "Your result is not entered yet."}</li> : visible.map(r => <li key={s(r, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(r, "student_id"))} — <b>{String(r.marks ?? "—")} / {String(t.total_marks ?? "")}</b>{s(r, "remarks") ? ` · ${s(r, "remarks")}` : ""}</span>{Number(r.marks || 0) / Number(t.total_marks || 1) * 100 >= 40 && <button onClick={() => setCert({ student: nameOf(s(r, "student_id")), test: s(t, "title"), marks: Number(r.marks || 0), total: Number(t.total_marks || 0), date: s(t, "test_date") })} className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-extrabold">🏆 Certificate</button>}</li>)}</ul>
             </div>;
           })}
         </div>
@@ -523,6 +662,20 @@ export default function DashboardPage() {
           <div><label className="label">Starts at</label><input type="datetime-local" className="input" value={form.starts_at || ""} onChange={e => setForm({ ...form, starts_at: e.target.value })} /></div>
           {sel("Status", form.status || "scheduled", v => setForm({ ...form, status: v }), [{ v: "scheduled", l: "Scheduled" }, { v: "live", l: "Live now" }])}
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save live class</button></form>}
+        <div className="card mt-3"><h3 className="font-extrabold">Weekly timetable</h3>
+          {isStaff && <form onSubmit={createTimetable} className="mt-3 grid gap-3 sm:grid-cols-3">
+            {sel("Batch", ttForm.batch_id, v => setTtForm({ ...ttForm, batch_id: v }), batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
+            {sel("Day", ttForm.day_of_week, v => setTtForm({ ...ttForm, day_of_week: v }), DAYS.map(d => ({ v: d, l: d })))}
+            <div><label className="label">Subject</label><input className="input" value={ttForm.subject} onChange={e => setTtForm({ ...ttForm, subject: e.target.value })} /></div>
+            <div><label className="label">Start time</label><input type="time" className="input" value={ttForm.start_time} onChange={e => setTtForm({ ...ttForm, start_time: e.target.value })} /></div>
+            <div><label className="label">End time</label><input type="time" className="input" value={ttForm.end_time} onChange={e => setTtForm({ ...ttForm, end_time: e.target.value })} /></div>
+            {sel("Teacher", ttForm.teacher_id, v => setTtForm({ ...ttForm, teacher_id: v }), teachers.map(x => ({ v: s(x, "id"), l: s(x, "full_name") })))}
+            <div className="flex items-end"><button className="btn-brand !py-2.5 text-sm">Add to timetable</button></div>
+          </form>}
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {DAYS.map(d => { const rows = (data.timetable || []).filter(x => s(x, "day_of_week") === d).sort((a, b) => s(a, "start_time").localeCompare(s(b, "start_time"))); return <div key={d} className="rounded-xl border p-3"><b className="text-sm">{d}</b>{rows.length === 0 ? <p className="mt-1 text-xs text-slate-500">No classes.</p> : <ul className="mt-1 space-y-1 text-xs">{rows.map(x => <li key={s(x, "id")} className="rounded-lg bg-slate-50 px-2 py-1.5"><b>{s(x, "start_time")}–{s(x, "end_time")}</b> · {s(x, "subject")} · {batchName(s(x, "batch_id"))}{s(x, "teacher_id") ? ` · ${nameOf(s(x, "teacher_id"))}` : ""}</li>)}</ul>}</div>; })}
+          </div>
+        </div>
         <div className="mt-4 space-y-2">
           {(data.live_classes || []).length === 0 && empty("No live classes scheduled yet.")}
           {(data.live_classes || []).map(c => <div key={s(c, "id")} className="card !p-4"><b className="text-sm">{s(c, "title")}</b><p className="text-xs text-slate-500">{batchName(s(c, "batch_id"))} · {s(c, "subject")} · {s(c, "starts_at") ? new Date(s(c, "starts_at")).toLocaleString() : "—"}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(c, "status") === "live" ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{s(c, "status") === "live" ? "● Live now" : "Scheduled"}</span>{s(c, "meet_url") && <div><a href={s(c, "meet_url")} target="_blank" rel="noreferrer" className="btn-brand mt-2 inline-block !py-2 text-xs">Join class ↗</a></div>}</div>)}
@@ -550,9 +703,13 @@ export default function DashboardPage() {
           <div><label className="label">Amount (₹)</label><input required type="number" className="input" value={feeAmt} onChange={e => setFeeAmt(e.target.value)} /></div>
           <div><label className="label">Due month (e.g. November 2026)</label><input className="input" value={feeMonth} onChange={e => setFeeMonth(e.target.value)} /></div>
           {sel("Status", feeStatus, setFeeStatus, [{ v: "pending", l: "Pending" }, { v: "paid", l: "Paid" }])}
-        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save fee — receipt auto-generated (U++-2026-XXXX)</button></form>}
+          {sel("Payment mode", feeMode, setFeeMode, [{ v: "Cash", l: "Cash" }, { v: "UPI", l: "UPI" }, { v: "Bank Transfer", l: "Bank Transfer" }])}
+          <div><label className="label">UPI reference / transaction ID (if UPI)</label><input className="input" value={feeUpiRef} onChange={e => setFeeUpiRef(e.target.value)} placeholder="e.g. 123456789012" /></div>
+          <div><label className="label">Coupon code (optional — % off applied)</label><input className="input" value={feeCoupon} onChange={e => setFeeCoupon(e.target.value)} placeholder="e.g. UPLUS10" /></div>
+          <div><label className="label">Institute UPI ID (shown on receipts)</label><input className="input" value={feeUpiId} onChange={e => setFeeUpiId(e.target.value)} placeholder="e.g. uacademy@okhdfcbank" /></div>
+        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save fee — receipt auto-generated (U++-2026-XXXX)</button><p className="mt-2 text-xs text-slate-500">UPI payments are recorded here only — there is no online payment gateway connected. Collect the payment on the institute UPI ID above and keep the UPI reference.</p></form>}
         {(() => { const list = (data.fees || []).filter(f => viewStudent(f)); const collected = list.filter(f => s(f, "status") === "paid").reduce((t, f) => t + n(f, "amount"), 0); const pending = list.filter(f => s(f, "status") === "pending").reduce((t, f) => t + n(f, "amount"), 0); return <div><div className="mt-3 grid grid-cols-2 gap-3"><div className="card !p-4"><b className="text-xl">₹{collected}</b><span className="block text-xs font-bold text-slate-500">Collected</span></div><div className="card !p-4"><b className="text-xl">₹{pending}</b><span className="block text-xs font-bold text-slate-500">Pending</span></div></div>
-        <div className="mt-4 space-y-2">{list.length === 0 && empty("No fees recorded yet.")}{list.map(f => <div key={s(f, "id")} className="card !p-4"><b className="text-sm">₹{String(f.amount)} — {nameOf(s(f, "student_id"))}</b><p className="text-xs text-slate-500">Receipt {s(f, "receipt_no") || "—"} · {batchName(s(f, "batch_id"))} · Due {s(f, "due_month")} · {s(f, "paid_at") ? `Paid ${new Date(s(f, "paid_at")).toLocaleDateString()}` : "Not paid"}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(f, "status") === "paid" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(f, "status")}</span>{profile?.role === "admin" && s(f, "status") === "pending" && <button onClick={() => markPaid(s(f, "id"))} className="btn-brand ml-2 !py-1.5 text-xs">Mark as paid</button>}</div>)}</div></div>; })()}
+        <div className="mt-4 space-y-2">{list.length === 0 && empty("No fees recorded yet.")}{list.map(f => <div key={s(f, "id")} className="card !p-4"><b className="text-sm">₹{String(f.amount)} — {nameOf(s(f, "student_id"))}</b><p className="text-xs text-slate-500">Receipt {s(f, "receipt_no") || "—"} · {batchName(s(f, "batch_id"))} · Due {s(f, "due_month")} · {s(f, "paid_at") ? `Paid ${new Date(s(f, "paid_at")).toLocaleDateString()}` : "Not paid"}{s(f, "payment_mode") ? ` · ${s(f, "payment_mode")}` : ""}{s(f, "upi_reference") ? ` · UPI ref: ${s(f, "upi_reference")}` : ""}{s(f, "coupon_code") ? ` · Coupon: ${s(f, "coupon_code")}` : ""}{feeUpiId ? ` · Pay UPI: ${feeUpiId}` : ""}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(f, "status") === "paid" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(f, "status")}</span>{profile?.role === "admin" && s(f, "status") === "pending" && <button onClick={() => markPaid(s(f, "id"))} className="btn-brand ml-2 !py-1.5 text-xs">Mark as paid</button>}</div>)}</div></div>; })()}
       </div>
     );
     if (section === "doubts") return (
@@ -576,7 +733,7 @@ export default function DashboardPage() {
           <div><label className="label">Title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
           {sel("Audience", annAud, setAnnAud, [{ v: "all", l: "Everyone" }, { v: "students", l: "Students" }, { v: "parents", l: "Parents" }, { v: "teachers", l: "Teachers" }])}
           <div className="sm:col-span-2"><label className="label">Message</label><input required className="input" value={form.body || ""} onChange={e => setForm({ ...form, body: e.target.value })} /></div>
-        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Send announcement</button><p className="mt-2 text-xs text-slate-500">This also creates a notification for each person in the audience.</p></form>}
+        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Send announcement</button><p className="mt-2 text-xs text-slate-500">This also creates a notification for each person in the audience. Push notifications to phones are not built — there is no push service on the free tier — so announcements appear as in-app notifications here.</p></form>}
         <h3 className="mt-5 font-extrabold">Announcements</h3>
         <div className="mt-2 space-y-2">{(data.announcements || []).length === 0 && empty("No announcements yet.")}{(data.announcements || []).map(a => <div key={s(a, "id")} className="card !p-4"><b className="text-sm">{s(a, "title")}</b><p className="text-sm text-slate-600">{s(a, "body")}</p><p className="text-xs text-slate-500">Audience: {s(a, "audience")}</p></div>)}</div>
         <h3 className="mt-5 font-extrabold">Your notifications</h3>
@@ -631,8 +788,31 @@ export default function DashboardPage() {
           </tbody></table></div>
           <button onClick={downloadCSV} className="btn-brand mt-3 !py-2.5 text-sm">Download CSV report</button>
         </div>
-        <div className="card mt-3"><h3 className="font-extrabold">Enquiries (from the landing-page demo form)</h3>
-          <div className="mt-2 space-y-2">{(data.enquiries || []).length === 0 && <p className="text-sm text-slate-500">No enquiries yet.</p>}{(data.enquiries || []).map(q => <div key={s(q, "id")} className="rounded-xl border p-3 text-sm"><b>{s(q, "student_name")}</b> — {s(q, "parent_mobile")} · {s(q, "class_label")} · {s(q, "board")} · Interested in: {s(q, "interested_in")}{s(q, "notes") ? ` · ${s(q, "notes")}` : ""}</div>)}</div>
+        <div className="card mt-3"><h3 className="font-extrabold">Leads CRM — enquiries from the landing page</h3>
+          <p className="mt-1 text-sm text-slate-600">Track every demo enquiry as a lead: set its status and follow-up date, or convert it into an onboarding invite (enter the student's email first).</p>
+          <div className="mt-2 space-y-2">
+            {(data.enquiries || []).length === 0 && <p className="text-sm text-slate-500">No enquiries yet.</p>}
+            {(data.enquiries || []).map(q => { const qid = s(q, "id"); return <div key={qid} className="rounded-xl border p-3 text-sm"><b>{s(q, "student_name")}</b> — {s(q, "parent_mobile")} · {s(q, "class_label")} · {s(q, "board")} · Interested in: {s(q, "interested_in")}{s(q, "notes") ? ` · ${s(q, "notes")}` : ""}
+              <div className="mt-2 grid gap-2 sm:grid-cols-4">
+                {sel("Status", leadStatus[qid] || s(q, "status") || "new", v => setLeadStatus({ ...leadStatus, [qid]: v }), [{ v: "new", l: "New" }, { v: "contacted", l: "Contacted" }, { v: "enrolled", l: "Enrolled" }, { v: "rejected", l: "Rejected" }])}
+                <div><label className="label">Follow-up date</label><input type="date" className="input" value={leadFollow[qid] || s(q, "follow_up_date") || ""} onChange={e => setLeadFollow({ ...leadFollow, [qid]: e.target.value })} /></div>
+                <div><label className="label">Student email (to convert)</label><input className="input" placeholder="student@email.com" value={leadEmail[qid] || ""} onChange={e => setLeadEmail({ ...leadEmail, [qid]: e.target.value })} /></div>
+                <div className="flex items-end gap-2"><button onClick={() => updateLead(qid)} className="rounded-lg border px-3 py-2 text-xs font-bold">Save lead</button>{profile?.role === "admin" && <button onClick={() => convertLead(q)} className="btn-brand !py-2 text-xs">Convert to invite</button>}</div>
+              </div>
+            </div>; })}
+          </div>
+        </div>
+        <div className="card mt-3"><h3 className="font-extrabold">Coupons — discounts for fees &amp; courses</h3>
+          {profile?.role === "admin" && <form onSubmit={createCoupon} className="mt-3 grid gap-3 sm:grid-cols-4">
+            <div><label className="label">Coupon code</label><input required className="input" value={couponForm.code} onChange={e => setCouponForm({ ...couponForm, code: e.target.value })} placeholder="e.g. UPLUS10" /></div>
+            <div><label className="label">Discount % off</label><input required type="number" className="input" value={couponForm.discount_percent} onChange={e => setCouponForm({ ...couponForm, discount_percent: e.target.value })} placeholder="10" /></div>
+            <div><label className="label">Valid until</label><input type="date" className="input" value={couponForm.valid_until} onChange={e => setCouponForm({ ...couponForm, valid_until: e.target.value })} /></div>
+            <div className="flex items-end"><button className="btn-brand !py-2.5 text-sm">Create coupon</button></div>
+          </form>}
+          <div className="mt-3 space-y-2">
+            {(data.coupons || []).length === 0 && <p className="text-sm text-slate-500">No coupons yet. Create one above (Admin) — then use its code in Fees or in a course enrolment.</p>}
+            {(data.coupons || []).map(c => <div key={s(c, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-sm"><span><b>{s(c, "code")}</b> — {String(c.discount_percent ?? 0)}% off{s(c, "valid_until") ? ` · valid until ${s(c, "valid_until")}` : ""}</span><span className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${String(c.is_active) === "false" ? "bg-slate-200" : "bg-brand-tint text-brand-dark"}`}>{String(c.is_active) === "false" ? "Inactive" : "Active"}</span>{profile?.role === "admin" && <button onClick={() => toggleCoupon(c)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">{String(c.is_active) === "false" ? "Activate" : "Deactivate"}</button>}</span></div>)}
+          </div>
         </div>
         <div className="card mt-3"><h3 className="font-extrabold">Live counts</h3><ul className="mt-2 space-y-1 text-sm text-slate-600"><li>Batches: {counts.batches ?? 0}</li><li>Lectures: {counts.lectures ?? 0}</li><li>Assignments: {counts.assignments ?? 0}</li><li>Tests: {counts.tests ?? 0}</li><li>Fees recorded: {counts.fees ?? 0}</li><li>Open doubts: {counts.doubts ?? 0}</li></ul></div>
       </div>

@@ -124,6 +124,7 @@ create table if not exists public.fees (
   batch_id uuid references public.batches(id) on delete set null,
   amount numeric not null, status text not null default 'pending' check (status in ('pending','paid')),
   receipt_no text, due_month text, paid_at timestamptz,
+  payment_mode text, upi_reference text, coupon_code text,
   created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
 );
@@ -159,7 +160,42 @@ create table if not exists public.notifications (
 create table if not exists public.enquiries (
   id uuid primary key default gen_random_uuid(),
   student_name text not null, parent_mobile text, class_label text, board text,
-  interested_in text, notes text, created_at timestamptz not null default now()
+  interested_in text, notes text,
+  status text not null default 'new' check (status in ('new','contacted','enrolled','rejected')),
+  follow_up_date date,
+  created_at timestamptz not null default now()
+);
+
+-- ---------- ClassWalla-style: courses, coupons, timetable, course enrolments ----------
+create table if not exists public.courses (
+  id uuid primary key default gen_random_uuid(),
+  title text not null, class_label text, subject text, description text,
+  price numeric not null default 0, is_paid boolean not null default false,
+  bundle_name text, created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+create table if not exists public.coupons (
+  id uuid primary key default gen_random_uuid(),
+  code text not null unique, discount_percent numeric not null default 0,
+  valid_until date, is_active boolean not null default true,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+create table if not exists public.timetable (
+  id uuid primary key default gen_random_uuid(),
+  batch_id uuid references public.batches(id) on delete cascade,
+  day_of_week text not null check (day_of_week in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')),
+  start_time text, end_time text, subject text,
+  teacher_id uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+create table if not exists public.course_enrollments (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  price_paid numeric not null default 0, coupon_code text,
+  created_at timestamptz not null default now(),
+  unique (course_id, student_id)
 );
 
 -- ---------- Teacher onboarding: requests + Admin invites ----------
@@ -215,7 +251,8 @@ begin
   for t in select unnest(array[
     'batches','enrollments','lectures','materials','assignments','submissions',
     'tests','test_results','attendance','fees','live_classes','doubts',
-    'announcements','notifications','role_permissions']) loop
+    'announcements','notifications','role_permissions',
+    'courses','coupons','timetable','course_enrollments']) loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy "auth read %I" on public.%I for select using (auth.role() = ''authenticated'')', t, t);
     execute format('create policy "auth write %I" on public.%I for insert with check (auth.role() = ''authenticated'')', t, t);
@@ -254,6 +291,12 @@ create index if not exists idx_attendance_student on public.attendance(student_i
 create index if not exists idx_fees_student on public.fees(student_id);
 create index if not exists idx_doubts_student on public.doubts(student_id);
 create index if not exists idx_notifications_user on public.notifications(user_id);
+create index if not exists idx_courses_bundle on public.courses(bundle_name);
+create index if not exists idx_course_enrollments_course on public.course_enrollments(course_id);
+create index if not exists idx_course_enrollments_student on public.course_enrollments(student_id);
+create index if not exists idx_timetable_batch on public.timetable(batch_id);
+create index if not exists idx_coupons_code on public.coupons(code);
+create index if not exists idx_enquiries_status on public.enquiries(status);
 create index if not exists idx_teacher_requests_email on public.teacher_requests(email);
 create index if not exists idx_onboarding_invites_email on public.onboarding_invites(email);
 
