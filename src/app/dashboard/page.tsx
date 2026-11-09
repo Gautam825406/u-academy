@@ -68,8 +68,18 @@ export default function DashboardPage() {
   const [leadFollow, setLeadFollow] = useState<Record<string, string>>({});
   const [leadEmail, setLeadEmail] = useState<Record<string, string>>({});
   const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+  const [payBusy, setPayBusy] = useState("");
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Cashfree return landing: /dashboard?section=batches&paid=1 (or payment=failed)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sec = params.get("section");
+    if (sec) setSection(sec);
+    if (params.get("paid") === "1") setMsg("Payment successful — you are enrolled in the batch. Welcome!");
+    if (params.get("payment") === "failed") setMsg("Payment did not complete — you were not charged. You can try again, or pay at the institute in cash/UPI and ask Admin to confirm your enrolment.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => { if (profile) loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [section, profile]);
 
   async function loadProfile() {
@@ -96,7 +106,7 @@ export default function DashboardPage() {
   }
 
   async function loadAll() {
-    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments"];
+    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments","payments"];
     const out: Record<string, Row[]> = {};
     for (const t of tables) {
       const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
@@ -145,6 +155,9 @@ export default function DashboardPage() {
     const table = tableMap[section]; if (!table) return;
     const payload: Record<string, unknown> = { ...form };
     if (payload.total_marks) payload.total_marks = Number(payload.total_marks);
+    if (payload.price !== undefined && payload.price !== "") payload.price = Number(payload.price);
+    if (payload.capacity !== undefined && payload.capacity !== "") payload.capacity = Number(payload.capacity);
+    if (payload.status === "") payload.status = "active";
     if (payload.batch_id === "") payload.batch_id = null;
     if (payload.teacher_id === "") payload.teacher_id = null;
     if (payload.starts_at) payload.starts_at = new Date(String(payload.starts_at)).toISOString();
@@ -157,6 +170,36 @@ export default function DashboardPage() {
     if (!enrolBatch || !enrolStudent) return setMsg("Pick a batch and a student to enrol.");
     const { error } = await supabase.from("enrollments").insert({ batch_id: enrolBatch, student_id: enrolStudent });
     if (error) setMsg(error.message); else { setMsg(`Enrolled ${nameOf(enrolStudent)} into ${batchName(enrolBatch)}.`); loadAll(); }
+  }
+  // ---- Cashfree pay-and-enrol (student) ----
+  async function payAndEnrol(batchId: string) {
+    const batch = batches.find(b => s(b, "id") === batchId);
+    const price = batch ? n(batch, "price") : 0;
+    setPayBusy(batchId); setMsg("");
+    try {
+      const res = await fetch("/api/cashfree/create-order", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg((data.error as string) || "Could not start the payment.");
+        if (String(data.error || "").includes("not configured")) {
+          setMsg("Cashfree is not set up yet. Pay at the institute in cash/UPI — Admin will confirm your enrolment in Batches.");
+        }
+        return;
+      }
+      if (data.free) { setMsg(`Enrolled in ${data.title || "the batch"} — it is free.`); loadAll(); return; }
+      // Cashfree hosted checkout: prefer the payment_link the order API
+      // returns; otherwise use the hosted form with the payment session id.
+      const link = data.payment_link as string | undefined;
+      const sessionId = data.payment_session_id as string | undefined;
+      if (link) window.location.href = link;
+      else if (sessionId) window.location.href = `https://payments.cashfree.com/forms?paymentSessionId=${encodeURIComponent(sessionId)}`;
+      else setMsg("Cashfree did not return a checkout link. Please try again or pay at the institute.");
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : "Could not start the payment.");
+    } finally { setPayBusy(""); }
   }
   async function unenrol(batchId: string, studentId: string) {
     const { error } = await supabase.from("enrollments").delete().eq("batch_id", batchId).eq("student_id", studentId);
@@ -456,11 +499,14 @@ export default function DashboardPage() {
                   <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Unanswered doubts: <b>{openDoubts.length}</b></span><button onClick={() => openSection("doubts")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Doubts →</button></li>
                 </ul>
               </div>
+              {(profile.role === "student" || profile.role === "parent") && <div className="card mt-5"><h3 className="font-extrabold">My batches{childProfile ? ` — ${effectiveName}` : ""}</h3>
+                {(() => { const mine = (data.enrollments || []).filter(e => s(e, "student_id") === effectiveId); if (!mine.length) return <p className="mt-2 text-sm text-slate-500">You are not enrolled in any batch yet. Go to Batches, pick one, and pay via Cashfree (or pay at the institute) to enrol.</p>; return <ul className="mt-2 space-y-2 text-sm">{mine.map(e => { const b = batches.find(x => s(x, "id") === s(e, "batch_id")); if (!b) return null; return <li key={s(e, "id")} className="flex items-center justify-between rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")} · {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</span><span className="rounded-full bg-brand-tint px-2 py-1 text-xs font-extrabold text-brand-dark">✓ Enrolled</span></li>; })}</ul>; })()}
+              </div>}
               <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {JUMP_TO.filter(k => isEnabled(k)).map(k => { const i = FEATURE_KEYS.indexOf(k as never); return <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{FEATURES[i]}</button>; })}
               </div>
-              <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are recorded manually in Fees &amp; Receipts — no online payment gateway yet.</p></div>
+              <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are paid online via Cashfree when Admin has added the Cashfree keys in Vercel; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p></div>
             </div>
             );
           })()}
@@ -520,6 +566,9 @@ export default function DashboardPage() {
           <div><label className="label">Board</label><input className="input" value={form.board || ""} onChange={e => setForm({ ...form, board: e.target.value })} /></div>
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           {sel("Teacher", form.teacher_id || "", v => setForm({ ...form, teacher_id: v }), teachers.map(t => ({ v: s(t, "id"), l: `${s(t, "full_name")} — ${s(t, "subject")}` })))}
+          <div><label className="label">Price (₹, 0 = free)</label><input type="number" className="input" value={form.price || ""} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="e.g. 2000" /></div>
+          <div><label className="label">Capacity (seats, blank = unlimited)</label><input type="number" className="input" value={form.capacity || ""} onChange={e => setForm({ ...form, capacity: e.target.value })} /></div>
+          {sel("Status", form.status || "active", v => setForm({ ...form, status: v }), [{ v: "active", l: "Active — open for enrolment" }, { v: "upcoming", l: "Upcoming" }, { v: "closed", l: "Closed" }])}
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save batch</button></form>}
         {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Enrol a student into a batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-3">
           {sel("Batch", enrolBatch, setEnrolBatch, batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
@@ -554,12 +603,28 @@ export default function DashboardPage() {
           {batches.map(b => {
             const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === s(b, "id"));
             return <div key={s(b, "id")} className="card !p-4"><b className="text-sm">{s(b, "name")}</b>
-              <p className="text-xs text-slate-500">{s(b, "class_label")} · {s(b, "board")} · {s(b, "subject")} · Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled</p>
-              <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
+              <p className="text-xs text-slate-500">{s(b, "class_label")} · {s(b, "board")} · {s(b, "subject")} · Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"} · {s(b, "status") || "active"}</p>
+              {!isStaff && (() => {
+                const mine = enrolled.some(e => s(e, "student_id") === effectiveId);
+                const full = s(b, "capacity") && enrolled.length >= n(b, "capacity");
+                const closed = (s(b, "status") || "active") !== "active";
+                if (mine) return <span className="mt-2 inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span>;
+                if (full) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Batch full</span>;
+                if (closed) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Enrolment {s(b, "status")}</span>;
+                return <button onClick={() => payAndEnrol(s(b, "id"))} disabled={payBusy === s(b, "id")} className="btn-brand mt-2 !py-2 text-xs">{payBusy === s(b, "id") ? "Starting payment…" : n(b, "price") > 0 ? `Enroll — Pay ₹${String(b.price)} via Cashfree` : "Enroll free"}</button>;
+              })()}
+              <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
               {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>)}</ul>}
             </div>;
           })}
         </div>
+        {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Payments — Cashfree orders</h3>
+          <p className="mt-1 text-sm text-slate-600">Who paid, for which batch, and whether Cashfree confirmed it. Only “paid” orders enrol the student automatically. If a student paid in cash/UPI at the institute instead, enrol them with the “Enrol a student” panel above and record the fee in Fees &amp; Receipts.</p>
+          <div className="mt-3 space-y-2">
+            {(data.payments || []).length === 0 && <p className="text-sm text-slate-500">No payments yet. Paid batches show here once a student pays via Cashfree.</p>}
+            {(data.payments || []).map(p => <div key={s(p, "id")} className="rounded-xl border p-3 text-sm"><b>{nameOf(s(p, "student_id"))}</b> — {s(p, "batch_id") ? batchName(s(p, "batch_id")) : (data.courses || []).find(c => s(c, "id") === s(p, "course_id")) ? s((data.courses || []).find(c => s(c, "id") === s(p, "course_id")), "title") : "—"} · ₹{String(p.amount)} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status")}</span></div>)}
+          </div>
+        </div>}
       </div>
     );
     if (section === "lectures") return (

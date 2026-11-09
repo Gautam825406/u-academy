@@ -18,13 +18,14 @@ Starts empty — no sample users, no demo logins. **The first account you regist
 - **Certificates:** in Exams & Tests, any student scoring >= 40% gets a “🏆 Certificate” button opening a printable certificate (name, test, marks, date, institute) with a Print button.
 - **Weekly timetable:** in Live Classes, create timetable rows (batch, day, start/end time, subject, teacher) shown as a Monday–Sunday grid.
 - **Leads CRM:** in Reports, every landing-page enquiry is a lead with status (new/contacted/enrolled/rejected), follow-up date, and “Convert to invite” (creates an onboarding invite for the student once you enter their email).
+- **Cashfree pay-and-enrol:** Admin sets a price (₹, 0 = free), capacity and status on each batch in Batches. A student who registers and logs in sees every batch as a card with its price and status; if not enrolled, they tap **“Enroll — Pay ₹X via Cashfree”** (or “Enroll free”). Paid batches go through Cashfree Checkout; on return the app verifies the order with Cashfree and only then enrols the student, marks the payment paid, and records a paid fee receipt. Admin sees every Cashfree order in Batches > Payments. Run `supabase/add-cashfree.sql` on a live project that already has the base schema. See “Cashfree payments” below — keys are required, and without them enrolment falls back to cash/UPI at the institute.
 - **Fees are manual** — no payment gateway. Record a fee demand/payment in Fees & Receipts; UPI payments are recorded with their reference, not collected online.
 
 ## Free deploy — step by step
 
 ### 1. Create a free Supabase project (5 min)
 1. Go to https://supabase.com → Sign up (free) → New project. Pick a name, a database password (save it), and a region close to India (e.g. Mumbai / Singapore).
-2. Wait for it to finish, then open **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, and click **Run**. This creates all tables, RLS policies, indexes, and seeds `role_permissions` (14 features × 4 roles). On a project where the base schema is already live, run `supabase/add-onboarding.sql` to add only the teacher-onboarding tables (`teacher_requests`, `onboarding_invites`), and `supabase/add-classwalla.sql` to add the ClassWalla-style tables (`courses`, `coupons`, `timetable`, `course_enrollments`) plus the new `fees`/`enquiries` columns.
+2. Wait for it to finish, then open **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, and click **Run**. This creates all tables, RLS policies, indexes, and seeds `role_permissions` (14 features × 4 roles). On a project where the base schema is already live, run `supabase/add-onboarding.sql` to add only the teacher-onboarding tables (`teacher_requests`, `onboarding_invites`), `supabase/add-classwalla.sql` to add the ClassWalla-style tables (`courses`, `coupons`, `timetable`, `course_enrollments`) plus the new `fees`/`enquiries` columns, and `supabase/add-cashfree.sql` to add the `payments` table and the batch price/capacity/status columns.
 3. Go to **Project Settings → API** and copy: Project URL and `anon public` key.
 4. **Auth:** go to **Authentication → Providers → Email** and make sure Email is enabled. For the easiest first run, turn **OFF** “Confirm email” (Authentication → Providers → Email → Confirm email) — otherwise the first user must click a confirmation email before their profile row can be created. You can turn it back on later.
 5. **Storage (optional, for materials):** Storage → Create bucket `materials`, make it Public. Files uploaded later are linked from `materials.file_url`.
@@ -48,6 +49,7 @@ Never commit `.env.local` — it is in `.gitignore`. Only `.env.example` (placeh
    - `NEXT_PUBLIC_SUPABASE_URL` = `https://your-project.supabase.co`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = your anon public key
    - `SUPABASE_SERVICE_ROLE_KEY` = your service-role key (optional; only if you later add server admin actions)
+   - Cashfree (only if you take online payments — see “Cashfree payments” below): `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENV` (`SANDBOX` for testing, `PROD` for real money)
 4. Click **Deploy**. You get a free URL like `https://u-academy.vercel.app`. Every push to GitHub redeploys automatically.
 
 ### 4. First run — you become Admin
@@ -63,13 +65,30 @@ npm run dev                   # http://localhost:3000
 npm run build                 # production build check
 ```
 
+## Cashfree payments (pay-and-enrol)
+
+**How Admin gets the keys (Sandbox first, Production when you go live):**
+1. Sign up / sign in at https://www.cashfree.com → Cashfree Dashboard → **Developers → API Keys**.
+2. Copy the **App ID** and **Secret Key** for the **Sandbox** environment first (test mode, no real money). Later, switch to the **Production** keys when you are ready to take real payments.
+3. In Vercel: Project `u-academy` → **Settings → Environment Variables** → add `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, and `CASHFREE_ENV` (`SANDBOX` or `PROD`) for Production (and Preview, if you test preview deploys) → **Redeploy**.
+4. In Supabase, run `supabase/add-cashfree.sql` once (creates the `payments` table and adds price/capacity/status to `batches`).
+
+**The student flow:**
+1. Admin sets a price on a batch in Dashboard > Batches (₹, 0 = free), plus capacity and status (Active / Upcoming / Closed).
+2. A student registers, logs in, and opens **Batches** — every batch is shown as a card with its price. Overview also shows “My batches” for students.
+3. The student taps **“Enroll — Pay ₹X via Cashfree”** (or “Enroll free” for a free batch). The app calls `/api/cashfree/create-order`, which creates a Cashfree PG order (api-version 2023-08-01) and sends the student to Cashfree Checkout (UPI / cards / netbanking / wallets, as Cashfree offers).
+4. After payment, Cashfree returns the student to `/api/cashfree/return`, which verifies the order directly with Cashfree. **Only when Cashfree says `PAID`** does the app enrol the student, mark the payment paid, and record a paid fee receipt (`U++-CF-…`). If the payment fails, the student is not enrolled and can retry.
+5. Admin sees every order in **Batches > Payments** (student, batch, amount, order ID, status).
+
+**Honest fallback (no keys yet):** if `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` are not set in Vercel, the pay button shows “Cashfree is not set up yet. Pay at the institute in cash/UPI — Admin will confirm your enrolment in Batches.” Free batches always enrol directly with no payment. No money ever moves through the app without Cashfree keys, and no keys are stored in the code — only in Vercel env vars.
+
 ## Free-tier limits (what costs later)
 - **Vercel Hobby — free:** 100 GB bandwidth/month, unlimited static deploys, `*.vercel.app` domain. Custom domain is free to connect on Hobby; the domain itself costs ~₹800/year from a registrar (optional).
 - **Supabase Free — free:** 500 MB database, 50k monthly active users, 1 GB file storage, 2 GB bandwidth. Plenty for a small academy.
 - **What costs later:** only if you outgrow those limits, add a paid database/storage tier, or add Razorpay (payment gateway fees per transaction). Nothing in this codebase charges you.
 
 ## Honest notes / intentional limits
-- **Fees are manual** — no online payment gateway (no Razorpay/Cashfree). Receipts are recorded in the app with auto-generated receipt numbers; UPI is record-only (mode + reference + institute UPI ID), no money moves through the app.
+- **Fees / Cashfree:** online payment works only after Admin adds the Cashfree keys in Vercel (`CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENV`) and runs `supabase/add-cashfree.sql`. Until then, fees are manual — receipts are recorded in the app with auto-generated receipt numbers; UPI is record-only (mode + reference + institute UPI ID), no money moves through the app.
 - **No push notifications** — announcements appear as in-app notifications; there is no push service on the free tier, and the dashboard says so rather than faking it.
 - **File uploads:** materials and submissions link to a file URL (e.g. Google Drive / public PDF link). There is no in-app file-upload button — create a public `materials` bucket in Supabase Storage and paste the file URL.
 - **Parent linking:** a parent sees their child's data only once `child_student_id` is set — either at registration (parent enters the child's student ID) or by an Admin linking them in Dashboard > Users. If it is not set, a parent sees no child data.

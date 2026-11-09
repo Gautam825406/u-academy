@@ -44,6 +44,9 @@ create policy "Users can insert own profile" on public.profiles for insert with 
 create table if not exists public.batches (
   id uuid primary key default gen_random_uuid(),
   name text not null, class_label text not null, board text, subject text,
+  price numeric not null default 0,   -- batch fee in ₹ (0 = free)
+  capacity int,                        -- max students; null = unlimited
+  status text not null default 'active' check (status in ('active','closed','upcoming')),
   teacher_id uuid references public.profiles(id),
   created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
@@ -126,6 +129,23 @@ create table if not exists public.fees (
   receipt_no text, due_month text, paid_at timestamptz,
   payment_mode text, upi_reference text, coupon_code text,
   created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---------- Cashfree payments (pay-and-enrol) ----------
+-- One row per Cashfree order. Enrolment happens only after the return
+-- route verifies order_status = 'PAID' with Cashfree (see
+-- src/app/api/cashfree/return/route.ts). Free batches skip Cashfree.
+create table if not exists public.payments (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  batch_id uuid references public.batches(id) on delete set null,
+  course_id uuid references public.courses(id) on delete set null,
+  amount numeric not null, currency text not null default 'INR',
+  order_id text not null unique, payment_session_id text,
+  cf_payment_id text,
+  status text not null default 'created' check (status in ('created','paid','failed')),
+  payment_mode text,
   created_at timestamptz not null default now()
 );
 
@@ -251,7 +271,7 @@ begin
   for t in select unnest(array[
     'batches','enrollments','lectures','materials','assignments','submissions',
     'tests','test_results','attendance','fees','live_classes','doubts',
-    'announcements','notifications','role_permissions',
+    'announcements','notifications','role_permissions','payments',
     'courses','coupons','timetable','course_enrollments']) loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy "auth read %I" on public.%I for select using (auth.role() = ''authenticated'')', t, t);
@@ -299,6 +319,9 @@ create index if not exists idx_coupons_code on public.coupons(code);
 create index if not exists idx_enquiries_status on public.enquiries(status);
 create index if not exists idx_teacher_requests_email on public.teacher_requests(email);
 create index if not exists idx_onboarding_invites_email on public.onboarding_invites(email);
+create index if not exists idx_payments_order on public.payments(order_id);
+create index if not exists idx_payments_student on public.payments(student_id);
+create index if not exists idx_payments_batch on public.payments(batch_id);
 
 -- ---------- Storage (run in Dashboard > Storage, or via SQL) ----------
 -- Create a public bucket named "materials" in Storage, then add this policy in
