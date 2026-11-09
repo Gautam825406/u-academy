@@ -63,7 +63,7 @@ function isFreshTimestamp(timestamp: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  const secret = process.env.CASHFREE_SECRET_KEY;
+  const secret = (process.env.CASHFREE_SECRET_KEY || "").trim();
   const signature = request.headers.get("x-webhook-signature");
   const timestamp = request.headers.get("x-webhook-timestamp");
 

@@ -82,6 +82,7 @@ function ResultContent() {
   return (
     <main className="min-h-screen bg-gray-50 px-4 py-10">
       <div className={box}>
+        <img src="/logo.jpg" alt="U++ Academy" className="mb-4 h-14 w-14 rounded-2xl object-cover" />
         {loading ? (
           <>
             <p className="text-4xl">⏳</p>

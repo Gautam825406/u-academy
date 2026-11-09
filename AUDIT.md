@@ -181,3 +181,71 @@ no dedupe step is required.
 5. Webhook: after the env var + notify URL are set, pay once and confirm
    the enrolment appears even if the browser is closed right after paying
    (webhook path), with exactly one subscription and one fee receipt.
+
+## Payment failed — "authentication failed" at pay time (reported 9 Nov 2026 ~20:56 IST)
+
+Symptom: when a student taps Pay on a ₹500 batch, the payment fails and
+shows a message about authentication. No real payment has ever succeeded,
+so this was the first live payment attempt.
+
+Likely causes (in order):
+1. **Key/environment mismatch at Cashfree** — the Cashfree order API
+   (`POST /pg/orders`) returns 401 when the App ID / Secret do not belong
+   to the app for the environment being called. Production keys sent to
+   the Sandbox URL (or Sandbox keys to Production) are rejected the same
+   way. Before this fix, `CASHFREE_ENV` was compared with a strict
+   `=== "PROD"`, so any other spelling (e.g. `production`, `PROD ` with
+   a trailing space, or unset) silently sent Production keys to Sandbox.
+2. **Whitespace in pasted keys** — a leading/trailing space or newline
+   copied from the Cashfree dashboard / CSV makes the key invalid, while
+   it still looks right in Vercel. Before this fix the keys were used
+   untrimmed.
+3. **Wrong Cashfree app / Test mode** — the keys may belong to a Test-mode
+   app in the Cashfree dashboard while `CASHFREE_ENV=PROD`, or vice versa.
+4. **Stale student session** — a second, separate failure: if the
+   student's Supabase session had expired, create-order returned 401
+   "Not signed in" at pay time. The dashboard now refreshes/checks the
+   session before calling create-order and tells the student to log in
+   again instead of attempting the order.
+
+What the code now does:
+- `src/app/api/cashfree/create-order/route.ts` — trims
+  `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` / `CASHFREE_ENV` before use;
+  normalises the env (`PROD`/`PRODUCTION`, any case = Production, anything
+  else = Sandbox); logs only the env + base URL + Cashfree HTTP status
+  (never key values). A Cashfree 401/403 now returns HTTP 502 with a
+  specific message: "Cashfree authentication failed — the payment keys in
+  Vercel do not match the Cashfree app for this environment
+  (Production/Test). Ask Admin to check CASHFREE_APP_ID /
+  CASHFREE_SECRET_KEY and CASHFREE_ENV in Vercel against the Cashfree
+  dashboard." Other Cashfree failures keep Cashfree's own message.
+- `src/app/dashboard/page.tsx` `payAndEnrol()` — checks/refreshes the
+  Supabase session first ("Your session expired — please log in again and
+  try paying." if there is none); shows the Cashfree-auth message as-is
+  and does NOT fall back to the "pay at the institute" text for it (that
+  text is kept only for the genuinely-not-configured case).
+- `src/app/api/cashfree/config-check/route.ts` — **new, Admin-only**
+  diagnostics: signed-in Admins get only env (PROD/SANDBOX as
+  normalised), whether each key is set, their trimmed lengths, and
+  whether they contain whitespace. No key values, prefixes, or Cashfree
+  calls. Non-admins get 401/403.
+- Note: `return/route.ts` and `webhook/route.ts` still use the strict
+  `CASHFREE_ENV === "PROD"` check — worth normalising the same way in a
+  follow-up so a misspelt env cannot split the order/return/webhook
+  environments.
+
+Manual check the user (Admin) must do — code cannot fix this part:
+1. Cashfree Dashboard → Developers → API Keys: open the **Production**
+   app (not Test). Copy the App ID and Secret Key exactly as shown —
+   paste them into a plain text editor first and check there are no
+   leading/trailing spaces or newlines.
+2. Vercel → u-academy → Settings → Environment Variables: set
+   `CASHFREE_APP_ID` and `CASHFREE_SECRET_KEY` to those exact Production
+   values (Secret, Production) and `CASHFREE_ENV=PROD`, then Redeploy.
+3. After redeploy, as Admin, open
+   `https://u-academy-zeta.vercel.app/api/cashfree/config-check` while
+   signed in: it should report env PROD, both keys set, and no whitespace.
+   If it reports SANDBOX or whitespace, fix step 1–2 and redeploy again.
+4. Then retry a real small payment (₹10 test batch first, not ₹500).
+   If it still says authentication failed, the keys in Vercel are not the
+   Production app's keys — re-copy them from the Cashfree Production app.

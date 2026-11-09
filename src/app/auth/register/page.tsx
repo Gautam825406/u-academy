@@ -125,7 +125,7 @@ export default function RegisterPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-5 py-10">
-      <Link href="/" className="font-extrabold">← U++ Academy</Link>
+      <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-9 w-9 rounded-xl object-cover" />← U++ Academy</Link>
       <div className="mt-6 grid gap-8 md:grid-cols-2">
         <div><h1 className="text-3xl font-extrabold">Join U++ Academy</h1><p className="mt-2 text-slate-600">Create your account in a minute. One account opens the whole academy — classroom batches, the student app, tests and reports.</p>
         <ul className="mt-5 space-y-3 text-sm text-slate-600">{ROLES.map(r => <li key={r.key}><b>{r.label}s</b> — {r.desc}</li>)}</ul></div>

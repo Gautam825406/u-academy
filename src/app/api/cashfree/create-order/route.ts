@@ -83,16 +83,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ free: true, title });
     }
 
-    const appId = process.env.CASHFREE_APP_ID;
-    const secret = process.env.CASHFREE_SECRET_KEY;
+    // Cashfree credentials — trim: pasted values often carry leading/
+    // trailing whitespace or a trailing newline, which makes Cashfree
+    // reject the call with 401 "authentication failed" even though the
+    // keys look right in the Vercel dashboard. Never log key values.
+    const appId = (process.env.CASHFREE_APP_ID || "").trim();
+    const secret = (process.env.CASHFREE_SECRET_KEY || "").trim();
     if (!appId || !secret) {
       return NextResponse.json(
         { error: "Cashfree is not configured yet — ask Admin to add the Cashfree keys in Vercel env vars." },
         { status: 400 }
       );
     }
-    const isProd = process.env.CASHFREE_ENV === "PROD";
+    // Normalise the environment: 'PROD' / 'PRODUCTION' (any case, with
+    // surrounding whitespace) = Production API; anything else (including
+    // unset) = Sandbox. A Production key sent to the Sandbox URL — or a
+    // Sandbox key sent to Production — is rejected by Cashfree with 401.
+    const envRaw = (process.env.CASHFREE_ENV || "").trim().toUpperCase();
+    const isProd = envRaw === "PROD" || envRaw === "PRODUCTION";
     const base = isProd ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
+    console.log(`[cashfree create-order] env=${isProd ? "PROD" : "SANDBOX"} base=${base}`);
     const origin = new URL(request.url).origin;
     const orderId = `U++-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -121,6 +131,16 @@ export async function POST(request: NextRequest) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      // Cashfree 401/403 = its authentication rejected our credentials.
+      // That is a key/environment mismatch, not a student problem — say so
+      // plainly so Admin can fix it, instead of the generic message.
+      console.error(`[cashfree create-order] Cashfree ${res.status} from ${base}/orders: ${String(data.message || "no message")}`);
+      if (res.status === 401 || res.status === 403) {
+        return NextResponse.json(
+          { error: "Cashfree authentication failed — the payment keys in Vercel do not match the Cashfree app for this environment (Production/Test). Ask Admin to check CASHFREE_APP_ID / CASHFREE_SECRET_KEY and CASHFREE_ENV in Vercel against the Cashfree dashboard." },
+          { status: 502 }
+        );
+      }
       return NextResponse.json({ error: data.message || "Cashfree could not create the order. Please try again." }, { status: 400 });
     }
 

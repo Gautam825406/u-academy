@@ -79,7 +79,7 @@ export default function Landing() {
     <div>
       <header className="sticky top-0 z-50 border-b bg-[#f4f7f8]/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
-          <Link href="/" className="flex items-center gap-2 font-extrabold text-lg"><span className="grid h-10 w-10 place-items-center rounded-xl bg-brand text-white">U++</span><span>U++ Academy<small className="block text-[10px] font-semibold uppercase tracking-widest text-slate-500">Coaching · Classes 6–12</small></span></Link>
+          <Link href="/" className="flex items-center gap-2 font-extrabold text-lg"><img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" /><span>U++ Academy<small className="block text-[10px] font-semibold uppercase tracking-widest text-slate-500">Coaching · Classes 6–12</small></span></Link>
           <nav className="ml-auto hidden gap-1 md:flex">
             <a href="#courses" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Courses</a>
             <a href="#app" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Student App</a>
@@ -262,7 +262,7 @@ export default function Landing() {
           </form>
         </div>
       </section>
-      <footer className="border-t bg-white py-8 text-center text-sm text-slate-500">U++ Academy — Teach smarter. Learn better. Level up, one class at a time. · Coaching · Classes 6–12</footer>
+      <footer className="border-t bg-white py-8 text-center text-sm text-slate-500"><img src="/logo.jpg" alt="U++ Academy" className="mx-auto mb-3 h-14 w-14 rounded-2xl object-cover" />U++ Academy — Teach smarter. Learn better. Level up, one class at a time. · Coaching · Classes 6–12</footer>
     </div>
   );
 }

@@ -44,6 +44,9 @@ create policy "Users can insert own profile" on public.profiles for insert with 
 create table if not exists public.batches (
   id uuid primary key default gen_random_uuid(),
   name text not null, class_label text not null, board text, subject text,
+  description text,                  -- what the batch covers (shown on batch cards)
+  thumbnail_url text,                -- public URL of the batch cover image (batch-thumbnails bucket)
+  demo_pdf_url text,                 -- free demo lecture PDF, openable before purchase (batch-demo-pdfs bucket)
   price numeric not null default 0,   -- batch fee in ₹ (0 = free)
   capacity int,                        -- max students; null = unlimited
   status text not null default 'active' check (status in ('active','closed','upcoming')),

@@ -71,7 +71,7 @@ export default function LoginPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-5 py-10">
-      <Link href="/" className="font-extrabold">← U++ Academy</Link>
+      <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-9 w-9 rounded-xl object-cover" />← U++ Academy</Link>
       <div className="mt-6 grid gap-8 md:grid-cols-2">
         <div><h1 className="text-3xl font-extrabold">Welcome back</h1><p className="mt-2 text-slate-600">Your classroom is where you left it. Lectures resume mid-chapter, assignments remember their drafts, and parents see the latest marks — sign in with the role you registered with.</p>
         <p className="mt-4 rounded-xl bg-brand-tint p-3 text-sm font-semibold text-brand-dark">No demo logins here — this is a real app. Use the account you registered. The first account ever created is the Admin.</p></div>

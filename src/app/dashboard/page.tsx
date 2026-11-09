@@ -112,6 +112,13 @@ export default function DashboardPage() {
   const [ansText, setAnsText] = useState<Record<string, string>>({});
   const [replyTo, setReplyTo] = useState<Record<string, string>>({});
   const [dataLoading, setDataLoading] = useState(false);
+  // Batch thumbnail upload + batch edit (Admin only)
+  const [thumbUploading, setThumbUploading] = useState(false);
+  const [thumbError, setThumbError] = useState("");
+  const [demoUploading, setDemoUploading] = useState(false);
+  const [demoError, setDemoError] = useState("");
+  const [editingBatch, setEditingBatch] = useState<Row | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, string>>({});
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Cashfree return landing: /dashboard?section=batches&paid=1 (or payment=failed)
@@ -341,6 +348,85 @@ export default function DashboardPage() {
     const { error } = await supabase.from(table).insert(payload);
     if (error) setMsg(error.message); else { setForm({}); setMsg("Saved."); loadAll(); }
   }
+  // ---- Batch thumbnail upload (Admin only) ----
+  // Uploads to the public 'batch-thumbnails' Storage bucket and returns the
+  // public URL, stored as batches.thumbnail_url. Path pattern:
+  // batch-<uuid>.<ext> — unique per upload, so replacing a thumbnail never
+  // overwrites another batch's image. Falls back to a pasted image URL
+  // (the thumbnail_url text field) if the bucket is not set up yet.
+  const ALLOWED_THUMB_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  async function uploadThumbnail(file: File): Promise<string | null> {
+    setThumbError("");
+    if (!ALLOWED_THUMB_TYPES.includes(file.type)) { setThumbError("Please pick a JPG, PNG or WebP image."); return null; }
+    if (file.size > 5 * 1024 * 1024) { setThumbError("Image must be 5 MB or smaller."); return null; }
+    setThumbUploading(true);
+    const ext = (file.name.split(".").pop() || "png").toLowerCase().replace(/[^a-z0-9]/g, "") || "png";
+    const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const path = `batch-${uuid}.${ext}`;
+    const { error } = await supabase.storage.from("batch-thumbnails").upload(path, file, { cacheControl: "3600", upsert: false });
+    setThumbUploading(false);
+    if (error) { setThumbError(`${error.message} — run supabase/add-batch-description-thumbnail.sql in Supabase, or paste an image URL below instead.`); return null; }
+    const { data } = supabase.storage.from("batch-thumbnails").getPublicUrl(path);
+    return data.publicUrl;
+  }
+  // Called from a file input: uploads, then writes the public URL into the
+  // given form setter (create form or edit form).
+  async function onThumbPicked(file: File | undefined, setUrl: (url: string) => void) {
+    if (!file) return;
+    const url = await uploadThumbnail(file);
+    if (url) setUrl(url);
+  }
+  // ---- Batch demo lecture PDF upload (Admin only) ----
+  // Uploads to the public 'batch-demo-pdfs' Storage bucket and returns the
+  // public URL, stored as batches.demo_pdf_url. Path pattern:
+  // demo-<uuid>.pdf. Students open it BEFORE buying — the batch card's
+  // "Free Demo Lecture" button is never gated behind enrolment/payment.
+  async function uploadDemoPdf(file: File): Promise<string | null> {
+    setDemoError("");
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) { setDemoError("Please pick a PDF file."); return null; }
+    if (file.size > 10 * 1024 * 1024) { setDemoError("PDF must be 10 MB or smaller."); return null; }
+    setDemoUploading(true);
+    const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const path = `demo-${uuid}.pdf`;
+    const { error } = await supabase.storage.from("batch-demo-pdfs").upload(path, file, { cacheControl: "3600", upsert: false, contentType: "application/pdf" });
+    setDemoUploading(false);
+    if (error) { setDemoError(`${error.message} — run supabase/add-batch-demo-pdf.sql in Supabase, or paste a PDF URL below instead.`); return null; }
+    const { data } = supabase.storage.from("batch-demo-pdfs").getPublicUrl(path);
+    return data.publicUrl;
+  }
+  async function onDemoPdfPicked(file: File | undefined, setUrl: (url: string) => void) {
+    if (!file) return;
+    const url = await uploadDemoPdf(file);
+    if (url) setUrl(url);
+  }
+  const demoFileName = (url: string) => { try { return decodeURIComponent(url.split("?")[0].split("/").pop() || "demo-lecture.pdf"); } catch { return "demo-lecture.pdf"; } };
+  function startEditBatch(b: Row) {
+    setEditingBatch(b);
+    setEditForm({
+      name: s(b, "name"), class_label: s(b, "class_label"), board: s(b, "board"),
+      subject: s(b, "subject"), price: String(b.price ?? ""), capacity: String(b.capacity ?? ""),
+      status: s(b, "status") || "active", teacher_id: s(b, "teacher_id"),
+      description: s(b, "description"), thumbnail_url: s(b, "thumbnail_url"),
+      demo_pdf_url: s(b, "demo_pdf_url"),
+    });
+    setThumbError(""); setDemoError("");
+  }
+  async function saveEditBatch(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!editingBatch || profile?.role !== "admin") return;
+    const payload: Record<string, unknown> = {
+      name: editForm.name, class_label: editForm.class_label,
+      board: editForm.board || null, subject: editForm.subject || null,
+      description: editForm.description || null, thumbnail_url: editForm.thumbnail_url || null,
+      demo_pdf_url: editForm.demo_pdf_url || null,
+      price: editForm.price === "" ? 0 : Number(editForm.price),
+      capacity: editForm.capacity === "" ? null : Number(editForm.capacity),
+      status: editForm.status || "active", teacher_id: editForm.teacher_id || null,
+    };
+    const { error } = await supabase.from("batches").update(payload).eq("id", s(editingBatch, "id"));
+    if (error) setMsg(error.message);
+    else { setMsg(`Batch "${editForm.name}" updated.`); setEditingBatch(null); setEditForm({}); loadAll(); }
+  }
   async function enrol() {
     if (!enrolBatch || !enrolStudent) return setMsg("Pick a batch and a student to enrol.");
     const { error } = await supabase.from("enrollments").insert({ batch_id: enrolBatch, student_id: enrolStudent });
@@ -362,15 +448,32 @@ export default function DashboardPage() {
     const price = planId ? n((data.batch_plans || []).find(x => s(x, "id") === planId), "price") : (batch ? n(batch, "price") : 0);
     setPayBusy(batchId); setMsg("");
     try {
+      // Refresh the student session before paying: a stale/expired token
+      // makes create-order return 401 "Not signed in" at pay time, which
+      // the student sees as a failed payment. If there is no session at
+      // all, say so instead of attempting the order.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { setMsg("Your session expired — please log in again and try paying."); return; }
       const res = await fetch("/api/cashfree/create-order", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batch_id: batchId, plan_id: planId || undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMsg((data.error as string) || "Could not start the payment.");
-        if (String(data.error || "").includes("not configured")) {
+        const err = String(data.error || "");
+        if (err.includes("Cashfree authentication failed")) {
+          // Cashfree rejected the institute's payment keys — a config
+          // problem for Admin, NOT a reason to tell the student to pay
+          // at the institute as if Cashfree were simply not set up.
+          setMsg(err);
+          return;
+        }
+        setMsg(err || "Could not start the payment.");
+        if (err.includes("not configured")) {
           setMsg("Cashfree is not set up yet. Pay at the institute in cash/UPI — Admin will confirm your enrolment in Batches.");
+        }
+        if (err.includes("Not signed in")) {
+          setMsg("Your session expired — please log in again and try paying.");
         }
         return;
       }
@@ -647,6 +750,7 @@ export default function DashboardPage() {
 
   const sidebar = (
     <div className="flex h-full flex-col gap-1 overflow-y-auto p-3">
+      <div className="mb-2 flex items-center gap-2 px-1"><img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" /><span className="font-extrabold">U++ Academy</span></div>
       <div className="mb-2 rounded-2xl bg-brand-tint p-3"><b className="block">{profile.full_name}</b><span className="text-xs font-bold capitalize text-brand-dark">{profile.role}{profile.class_label ? ` · ${profile.class_label}` : ""}{profile.board ? ` · ${profile.board}` : ""}</span><span className="mt-1 block text-xs text-slate-500">{profile.email}</span>{childProfile && <span className="mt-1 block text-xs font-bold text-brand-dark">Viewing child: {effectiveName}</span>}</div>
       <p className="px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{profile.role === "student" ? "My learning · 11 sections" : profile.role === "admin" ? "All features · 15 sections" : `${profile.role} · ${allowedSections(profile.role).length} sections`}</p>
       {SECTION_GROUPS.map((group) => {
@@ -688,7 +792,7 @@ export default function DashboardPage() {
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 flex items-center gap-3 border-b bg-white px-4 py-3">
         <button className="rounded-xl border px-3 py-2 font-bold md:hidden" onClick={() => setDrawer(true)} aria-label="Open menu">☰ Menu</button>
-        <Link href="/" className="flex items-center gap-2 font-extrabold"><span className="grid h-9 w-9 place-items-center rounded-xl bg-brand text-white">U++</span><span className="hidden sm:inline">U++ Academy</span></Link>
+        <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-9 w-9 rounded-xl object-cover" /><span className="hidden sm:inline">U++ Academy</span></Link>
         <span className="ml-auto rounded-full bg-brand-tint px-3 py-1 text-xs font-extrabold capitalize text-brand-dark">{profile.role}</span>
         <button onClick={logout} className="hidden rounded-xl border px-3 py-2 text-sm font-bold md:block">Log out</button>
       </header>
@@ -698,6 +802,7 @@ export default function DashboardPage() {
           {msg && <p className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{msg}</p>}
           {childProfile && <p className="mb-3 rounded-xl bg-brand-tint p-3 text-sm font-bold text-brand-dark">Parent view — showing your child {effectiveName}&rsquo;s fees, attendance, tests and assignments below.</p>}
           {cert && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="w-full max-w-lg rounded-3xl border-4 border-amber-400 bg-white p-8 text-center shadow-xl">
+            <img src="/logo.jpg" alt="U++ Academy" className="mx-auto mb-3 h-14 w-14 rounded-2xl object-cover" />
             <p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">U++ Academy · {profile.institute_name || "U++ Academy"}</p>
             <h2 className="mt-2 text-3xl font-extrabold">Certificate of Achievement</h2>
             <p className="mt-4 text-sm text-slate-600">This certificate is awarded to</p>
@@ -842,7 +947,8 @@ export default function DashboardPage() {
                 <div className="card"><h2 className="text-xl font-extrabold">{sectionLabel(section)}</h2><p className="mt-2 text-sm text-slate-600">{!sectionAllowed ? "This section is not available for your role. Reports, user management and permissions belong to the Admin / Teacher dashboard." : sectionAdminOnly ? "This section is Admin-only." : "This feature is switched Off for your role. Ask an Admin to turn it on in Dashboard > Permissions."}</p><button onClick={() => openSection("overview")} className="btn-brand mt-3 !py-2 text-sm">Back to Overview</button></div>
               ) : section === "permissions" ? (
                 <div className="card"><h2 className="text-xl font-extrabold">Role Permissions — 14 features</h2><p className="mt-1 text-sm text-slate-600">Admin only. Toggle a feature for a role. Students, teachers and parents will see disabled features tagged “Off” in their sidebar.</p>
-                  <div className="mt-4 space-y-2">{perms.map(p => <div key={String(p.id)} className="flex items-center justify-between gap-3 rounded-xl border p-3 text-sm"><span className="font-bold capitalize">{String(p.role)} · {String(p.feature_key)}</span><button onClick={() => togglePerm(p)} disabled={profile.role!=="admin"} className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${p.enabled ? "bg-brand text-white" : "bg-slate-200"}`}>{p.enabled ? "On" : "Off"}</button></div>)}</div>
+                  
+        <div className="mt-4 space-y-2">{perms.map(p => <div key={String(p.id)} className="flex items-center justify-between gap-3 rounded-xl border p-3 text-sm"><span className="font-bold capitalize">{String(p.role)} · {String(p.feature_key)}</span><button onClick={() => togglePerm(p)} disabled={profile.role!=="admin"} className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${p.enabled ? "bg-brand text-white" : "bg-slate-200"}`}>{p.enabled ? "On" : "Off"}</button></div>)}</div>
                   {perms.length===0 && <p className="mt-3 text-sm text-slate-500">No permission rows yet — run supabase/schema.sql in your Supabase project, it seeds all 14 features × 4 roles.</p>}
                 </div>
               ) : (
@@ -870,7 +976,7 @@ export default function DashboardPage() {
     const empty = (t: string) => <div className="card mt-3 text-sm text-slate-500">{t}</div>;
     if (section === "batches") return (
       <div>
-        {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {profile?.role === "admin" && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div><label className="label">Batch name</label><input required className="input" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
           <div><label className="label">Class (e.g. Class 10)</label><input required className="input" value={form.class_label || ""} onChange={e => setForm({ ...form, class_label: e.target.value })} /></div>
           <div><label className="label">Board</label><input className="input" value={form.board || ""} onChange={e => setForm({ ...form, board: e.target.value })} /></div>
@@ -879,6 +985,21 @@ export default function DashboardPage() {
           <div><label className="label">Price (₹, 0 = free)</label><input type="number" className="input" value={form.price || ""} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="e.g. 2000" /></div>
           <div><label className="label">Capacity (seats, blank = unlimited)</label><input type="number" className="input" value={form.capacity || ""} onChange={e => setForm({ ...form, capacity: e.target.value })} /></div>
           {sel("Status", form.status || "active", v => setForm({ ...form, status: v }), [{ v: "active", l: "Active — open for enrolment" }, { v: "upcoming", l: "Upcoming" }, { v: "closed", l: "Closed" }])}
+          <div className="sm:col-span-2"><label className="label">Description — what this batch covers (shown on the batch card)</label><textarea rows={3} className="input" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Complete Class 10 Maths + Science with live classes, recorded lectures, weekly tests and doubt support." /></div>
+          <div className="sm:col-span-2"><label className="label">Thumbnail — cover image (JPG / PNG / WebP, up to 5 MB)</label>
+            {s(form, "thumbnail_url") ? <div className="mb-2 flex items-start gap-3"><img src={s(form, "thumbnail_url")} alt="Batch thumbnail preview" className="aspect-video w-40 rounded-xl object-cover" /><button type="button" onClick={() => setForm({ ...form, thumbnail_url: "" })} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-red-700">Remove</button></div> : null}
+            <input type="file" accept="image/jpeg,image/png,image/webp" className="input" onChange={e => { const f = e.target.files?.[0]; void onThumbPicked(f, url => setForm(prev => ({ ...prev, thumbnail_url: url }))); e.target.value = ""; }} />
+            <input className="input mt-2" value={form.thumbnail_url || ""} onChange={e => setForm({ ...form, thumbnail_url: e.target.value })} placeholder="…or paste an image URL instead" />
+            {thumbUploading && <p className="mt-1 text-xs font-bold text-brand-dark">Uploading thumbnail…</p>}
+            {thumbError && <p className="mt-1 text-xs font-bold text-red-700">{thumbError}</p>}
+          </div>
+          <div className="sm:col-span-2"><label className="label">Demo lecture PDF — free preview students can open before buying (PDF, up to 10 MB)</label>
+            {s(form, "demo_pdf_url") ? <div className="mb-2 flex flex-wrap items-center gap-3"><span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{demoFileName(s(form, "demo_pdf_url"))}</span><a href={s(form, "demo_pdf_url")} target="_blank" rel="noreferrer" className="text-xs font-bold text-brand-dark underline">Open demo PDF ↗</a><button type="button" onClick={() => setForm({ ...form, demo_pdf_url: "" })} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-red-700">Remove</button></div> : null}
+            <input type="file" accept="application/pdf" className="input" onChange={e => { const f = e.target.files?.[0]; void onDemoPdfPicked(f, url => setForm(prev => ({ ...prev, demo_pdf_url: url }))); e.target.value = ""; }} />
+            <input className="input mt-2" value={form.demo_pdf_url || ""} onChange={e => setForm({ ...form, demo_pdf_url: e.target.value })} placeholder="…or paste a PDF URL instead" />
+            {demoUploading && <p className="mt-1 text-xs font-bold text-brand-dark">Uploading demo PDF…</p>}
+            {demoError && <p className="mt-1 text-xs font-bold text-red-700">{demoError}</p>}
+          </div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save batch</button></form>}
         {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Enrol a student into a batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-3">
           {sel("Batch", enrolBatch, setEnrolBatch, (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
@@ -932,12 +1053,44 @@ export default function DashboardPage() {
             {(data.courses || []).map(c => { const enrolled = (data.course_enrollments || []).filter(e => s(e, "course_id") === s(c, "id")); const myCourse = enrolled.some(e => s(e, "student_id") === effectiveId); return <div key={s(c, "id")} className="rounded-xl border p-3 text-sm"><b>{s(c, "title")}</b> — {s(c, "class_label")} · {s(c, "subject")}{s(c, "bundle_name") ? ` · Bundle: ${s(c, "bundle_name")}` : ""} · {s(c, "is_paid") === "true" ? `₹${String(c.price ?? 0)} (paid)` : "Free"} · {enrolled.length} enrolled{s(c, "description") ? ` · ${s(c, "description")}` : ""}{!isStaff && myCourse && <span className="ml-2 rounded-full bg-brand-tint px-2 py-0.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span>}<p className="text-xs text-slate-500">{isStaff ? (enrolled.length ? enrolled.map(e => `${nameOf(s(e, "student_id"))} (₹${String(e.price_paid ?? 0)}${s(e, "coupon_code") ? `, coupon ${s(e, "coupon_code")}` : ""})`).join(", ") : "Nobody enrolled yet.") : ""}</p></div>; })}
           </div>
         </div>
-        <div className="mt-4 space-y-2">
+{profile?.role === "admin" && editingBatch && <form onSubmit={saveEditBatch} className="card mt-3 border-2 border-brand"><h3 className="font-extrabold">Edit batch — {s(editingBatch, "name")}</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div><label className="label">Batch name</label><input required className="input" value={editForm.name || ""} onChange={e => setEditForm({ ...editForm, name: e.target.value })} /></div>
+          <div><label className="label">Class (e.g. Class 10)</label><input required className="input" value={editForm.class_label || ""} onChange={e => setEditForm({ ...editForm, class_label: e.target.value })} /></div>
+          <div><label className="label">Board</label><input className="input" value={editForm.board || ""} onChange={e => setEditForm({ ...editForm, board: e.target.value })} /></div>
+          <div><label className="label">Subject</label><input className="input" value={editForm.subject || ""} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} /></div>
+          {sel("Teacher", editForm.teacher_id || "", v => setEditForm({ ...editForm, teacher_id: v }), teachers.map(t => ({ v: s(t, "id"), l: `${s(t, "full_name")} — ${s(t, "subject")}` })))}
+          <div><label className="label">Price (₹, 0 = free)</label><input type="number" className="input" value={editForm.price || ""} onChange={e => setEditForm({ ...editForm, price: e.target.value })} /></div>
+          <div><label className="label">Capacity (seats, blank = unlimited)</label><input type="number" className="input" value={editForm.capacity || ""} onChange={e => setEditForm({ ...editForm, capacity: e.target.value })} /></div>
+          {sel("Status", editForm.status || "active", v => setEditForm({ ...editForm, status: v }), [{ v: "active", l: "Active — open for enrolment" }, { v: "upcoming", l: "Upcoming" }, { v: "closed", l: "Closed" }])}
+          <div className="sm:col-span-2"><label className="label">Description — what this batch covers (shown on the batch card)</label><textarea rows={3} className="input" value={editForm.description || ""} onChange={e => setEditForm({ ...editForm, description: e.target.value })} placeholder="e.g. Complete Class 10 Maths + Science with live classes, recorded lectures, weekly tests and doubt support." /></div>
+          <div className="sm:col-span-2"><label className="label">Thumbnail — cover image (JPG / PNG / WebP, up to 5 MB)</label>
+            {s(editForm, "thumbnail_url") ? <div className="mb-2 flex items-start gap-3"><img src={s(editForm, "thumbnail_url")} alt="Batch thumbnail preview" className="aspect-video w-40 rounded-xl object-cover" /><button type="button" onClick={() => setEditForm({ ...editForm, thumbnail_url: "" })} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-red-700">Remove</button></div> : null}
+            <input type="file" accept="image/jpeg,image/png,image/webp" className="input" onChange={e => { const f = e.target.files?.[0]; void onThumbPicked(f, url => setEditForm(prev => ({ ...prev, thumbnail_url: url }))); e.target.value = ""; }} />
+            <input className="input mt-2" value={editForm.thumbnail_url || ""} onChange={e => setEditForm({ ...editForm, thumbnail_url: e.target.value })} placeholder="…or paste an image URL instead" />
+            {thumbUploading && <p className="mt-1 text-xs font-bold text-brand-dark">Uploading thumbnail…</p>}
+            {thumbError && <p className="mt-1 text-xs font-bold text-red-700">{thumbError}</p>}
+          </div>
+          <div className="sm:col-span-2"><label className="label">Demo lecture PDF — free preview students can open before buying (PDF, up to 10 MB)</label>
+            {s(editForm, "demo_pdf_url") ? <div className="mb-2 flex flex-wrap items-center gap-3"><span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold">{demoFileName(s(editForm, "demo_pdf_url"))}</span><a href={s(editForm, "demo_pdf_url")} target="_blank" rel="noreferrer" className="text-xs font-bold text-brand-dark underline">Open demo PDF ↗</a><button type="button" onClick={() => setEditForm({ ...editForm, demo_pdf_url: "" })} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-red-700">Remove</button></div> : null}
+            <input type="file" accept="application/pdf" className="input" onChange={e => { const f = e.target.files?.[0]; void onDemoPdfPicked(f, url => setEditForm(prev => ({ ...prev, demo_pdf_url: url }))); e.target.value = ""; }} />
+            <input className="input mt-2" value={editForm.demo_pdf_url || ""} onChange={e => setEditForm({ ...editForm, demo_pdf_url: e.target.value })} placeholder="…or paste a PDF URL instead" />
+            {demoUploading && <p className="mt-1 text-xs font-bold text-brand-dark">Uploading demo PDF…</p>}
+            {demoError && <p className="mt-1 text-xs font-bold text-red-700">{demoError}</p>}
+          </div>
+        </div><div className="mt-3 flex gap-2"><button className="btn-brand !py-2.5 text-sm">Save changes</button><button type="button" onClick={() => { setEditingBatch(null); setEditForm({}); setThumbError(""); }} className="rounded-xl border px-4 py-2.5 text-sm font-bold">Cancel</button></div></form>}
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
           {batches.length === 0 && empty("No batches yet — create your first batch above.")}
           {batches.map(b => {
             const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === s(b, "id"));
-            return <div key={s(b, "id")} className="card !p-4"><b className="text-sm">{s(b, "name")}</b>
-              <p className="text-xs text-slate-500">{s(b, "class_label")} · {s(b, "board")} · {s(b, "subject")} · Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"} · {s(b, "status") || "active"}</p>
+            const thumb = s(b, "thumbnail_url");
+            const initials = s(b, "name").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U+";
+            return <div key={s(b, "id")} className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              {thumb ? <img src={thumb} alt={`${s(b, "name")} thumbnail`} className="aspect-video w-full object-cover" /> : <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-brand to-brand-dark"><span className="text-4xl font-extrabold tracking-wide text-white">{initials}</span></div>}
+              <div className="p-4"><b className="text-base">{s(b, "name")}</b>
+              <p className="mt-1 flex flex-wrap gap-1">{[s(b, "class_label"), s(b, "board"), s(b, "subject")].filter(Boolean).map(c => <span key={c} className="rounded-full bg-brand-tint px-2 py-0.5 text-[11px] font-extrabold text-brand-dark">{c}</span>)}<span className={`rounded-full px-2 py-0.5 text-[11px] font-extrabold ${(s(b, "status") || "active") === "active" ? "bg-brand-tint text-brand-dark" : "bg-slate-200 text-slate-600"}`}>{s(b, "status") || "active"}</span></p>
+              {s(b, "description") && <p className="mt-2 line-clamp-2 text-sm text-slate-600">{s(b, "description")}</p>}
+              <p className="mt-2 text-xs text-slate-500">Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · <b className="text-sm text-ink">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</b></p>
+              {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-extrabold text-amber-800">📄 Free Demo Lecture — View Demo PDF ↗</a>}
               {!isStaff && (() => {
                 const bid = s(b, "id");
                 const mine = enrolled.some(e => s(e, "student_id") === effectiveId);
@@ -962,9 +1115,10 @@ export default function DashboardPage() {
                   <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand mt-2 !py-2 text-xs">{payBusy === bid ? "Starting payment…" : (sel ? n(sel, "price") > 0 : n(b, "price") > 0) ? `Enroll — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree` : "Enroll free"}</button>
                 </div>;
               })()}
+              {profile?.role === "admin" && <button onClick={() => startEditBatch(b)} className="mt-2 rounded-lg border px-3 py-1 text-xs font-bold">Edit batch</button>}
               {isStaff && <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>}
               {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
-            </div>;
+            </div></div>;
           })}
         </div>
         {isStaff && <div className="card mt-3"><h3 className="font-extrabold">Payments — Cashfree orders</h3>

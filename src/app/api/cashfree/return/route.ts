@@ -14,13 +14,14 @@ export async function GET(request: NextRequest) {
   const done = () => NextResponse.redirect(`${origin}/payment/result?order_id=${encodeURIComponent(orderId || "")}`);
   if (!orderId) return fail();
 
-  const appId = process.env.CASHFREE_APP_ID;
-  const secret = process.env.CASHFREE_SECRET_KEY;
+  const appId = (process.env.CASHFREE_APP_ID || "").trim();
+  const secret = (process.env.CASHFREE_SECRET_KEY || "").trim();
   if (!appId || !secret) return fail();
 
   try {
     const supabase = createClient();
-    const isProd = process.env.CASHFREE_ENV === "PROD";
+    const envRaw = (process.env.CASHFREE_ENV || "").trim().toUpperCase();
+    const isProd = envRaw === "PROD" || envRaw === "PRODUCTION";
     const base = isProd ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
     const res = await fetch(`${base}/orders/${encodeURIComponent(orderId)}`, {
       headers: {
