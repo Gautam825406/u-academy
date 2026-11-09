@@ -48,8 +48,15 @@ export async function POST(request: NextRequest) {
         const { count } = await supabase.from("enrollments").select("id", { count: "exact", head: true }).eq("batch_id", batchId);
         if ((count || 0) >= Number(batch.capacity)) return NextResponse.json({ error: "This batch is full." }, { status: 400 });
       }
-      const { data: already } = await supabase.from("enrollments").select("id").eq("batch_id", batchId).eq("student_id", user.id).maybeSingle();
-      if (already) return NextResponse.json({ error: "You are already enrolled in this batch." }, { status: 400 });
+      // Renewal (audit #3): an enrolment row alone must not block a new
+      // purchase — only an ACTIVE enrolment does. An expired/cancelled
+      // enrolment may buy (renew) again; the upsert below renews it.
+      const { data: already } = await supabase.from("enrollments").select("id,subscription_status,valid_until").eq("batch_id", batchId).eq("student_id", user.id).maybeSingle();
+      if (already) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const stillActive = (String(already.subscription_status || "active") === "active") && (!already.valid_until || String(already.valid_until) >= todayStr);
+        if (stillActive) return NextResponse.json({ error: "You are already enrolled in this batch." }, { status: 400 });
+      }
     } else if (courseId) {
       const { data: course } = await supabase.from("courses").select("*").eq("id", courseId).single();
       if (!course) return NextResponse.json({ error: "Course not found." }, { status: 404 });

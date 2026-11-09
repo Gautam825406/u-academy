@@ -10,8 +10,8 @@ import { createClient } from "@/lib/supabase/server";
 export async function GET(request: NextRequest) {
   const origin = new URL(request.url).origin;
   const orderId = new URL(request.url).searchParams.get("order_id");
-  const fail = () => NextResponse.redirect(`${origin}/dashboard?section=batches&payment=failed`);
-  const done = () => NextResponse.redirect(`${origin}/dashboard?section=batches&paid=1`);
+  const fail = () => NextResponse.redirect(`${origin}/payment/result?order_id=${encodeURIComponent(orderId || "")}`);
+  const done = () => NextResponse.redirect(`${origin}/payment/result?order_id=${encodeURIComponent(orderId || "")}`);
   if (!orderId) return fail();
 
   const appId = process.env.CASHFREE_APP_ID;
@@ -31,12 +31,19 @@ export async function GET(request: NextRequest) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.order_status !== "PAID") {
-      await supabase.from("payments").update({ status: "failed" }).eq("order_id", orderId);
+      // Never overwrite a paid row with a late/duplicate failure notice.
+      await supabase.from("payments").update({ status: "failed" }).eq("order_id", orderId).neq("status", "paid").neq("status", "successful");
       return fail();
     }
 
     const { data: payment } = await supabase.from("payments").select("*").eq("order_id", orderId).single();
     if (!payment) return fail();
+
+    // Idempotency (audit #4): Cashfree can redirect here more than once,
+    // and the webhook may already have enrolled this order. A payment
+    // that is already paid must never create a second enrolment,
+    // subscription or fee receipt.
+    if (payment.status === "paid" || payment.status === "successful") return done();
 
     const cfPaymentId = data.cf_payment_id || (Array.isArray(data.payments) && data.payments[0]?.cf_payment_id) || null;
     await supabase.from("payments").update({ status: "paid", cf_payment_id: cfPaymentId }).eq("order_id", orderId);
@@ -60,24 +67,31 @@ export async function GET(request: NextRequest) {
     if (batchId) {
       await supabase.from("enrollments").upsert({ batch_id: batchId, student_id: studentId, plan_id: planId, valid_until: validUntil, subscription_status: "active" }, { onConflict: "batch_id,student_id" });
       // PW-style subscription: the purchase that gives access until valid_until.
-      await supabase.from("subscriptions").insert({ student_id: studentId, batch_id: batchId, plan_id: planId, plan_name: planName || null, amount_paid: amount, valid_from: new Date().toISOString().slice(0, 10), valid_until: validUntil, status: "active", order_id: orderId });
+      // One subscription per order — skip if the webhook already made it.
+      const { data: existingSub } = await supabase.from("subscriptions").select("id").eq("order_id", orderId).maybeSingle();
+      if (!existingSub) {
+        await supabase.from("subscriptions").insert({ student_id: studentId, batch_id: batchId, plan_id: planId, plan_name: planName || null, amount_paid: amount, valid_from: new Date().toISOString().slice(0, 10), valid_until: validUntil, status: "active", order_id: orderId });
+      }
     }
     if (courseId) {
       await supabase.from("course_enrollments").upsert({ course_id: courseId, student_id: studentId, price_paid: amount }, { onConflict: "course_id,student_id" });
     }
-    // Paid fee receipt for the enrolment.
+    // Paid fee receipt for the enrolment — one per order.
     const receipt = `U++-CF-${orderId.replace(/^U\+\+-/, "").slice(0, 12)}`;
-    await supabase.from("fees").insert({
-      student_id: studentId,
-      batch_id: batchId,
-      amount,
-      status: "paid",
-      receipt_no: receipt,
-      due_month: new Date().toLocaleString("en-IN", { month: "long", year: "numeric" }),
-      paid_at: new Date().toISOString(),
-      payment_mode: "Cashfree",
-      created_by: studentId,
-    });
+    const { data: existingFee } = await supabase.from("fees").select("id").eq("receipt_no", receipt).maybeSingle();
+    if (!existingFee) {
+      await supabase.from("fees").insert({
+        student_id: studentId,
+        batch_id: batchId,
+        amount,
+        status: "paid",
+        receipt_no: receipt,
+        due_month: new Date().toLocaleString("en-IN", { month: "long", year: "numeric" }),
+        paid_at: new Date().toISOString(),
+        payment_mode: "Cashfree",
+        created_by: studentId,
+      });
+    }
     return done();
   } catch {
     return fail();

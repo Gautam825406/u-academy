@@ -10,6 +10,32 @@ type Row = Record<string, unknown>;
 const s = (r: Row | null | undefined, k: string) => String((r as Row)?.[k] ?? "");
 const n = (r: Row | null | undefined, k: string) => Number((r as Row)?.[k] ?? 0) || 0;
 const JUMP_TO = ["lectures","assignments","tests","live_classes","materials","attendance","fees","doubts"];
+// ---- Role-based access (real, not CSS hiding) ----
+// Students see ONLY the 11 learning sections. Teachers keep teaching +
+// Reports (analytics belong to Admin/Teacher) but never Users/Permissions
+// (or the admin-only Leads/Coupons panels, which live inside Reports).
+// Parents see their child's learning view. Admin sees everything.
+// A section outside a role's list can never be opened: openSection() and
+// the render guard below both enforce this list.
+const ROLE_SECTIONS: Record<string, string[]> = {
+  student: ["overview","batches","live_classes","lectures","assignments","doubts","materials","notifications","attendance","fees","profile"],
+  parent: ["overview","batches","live_classes","lectures","assignments","tests","materials","notifications","attendance","fees","doubts","profile"],
+  teacher: ["overview","batches","lectures","materials","assignments","tests","live_classes","attendance","doubts","notifications","reports","profile"],
+  admin: ["overview","batches","lectures","materials","assignments","tests","live_classes","attendance","fees","doubts","notifications","reports","users","permissions","profile"],
+};
+// Student-facing display names for the 11 student sections.
+const STUDENT_LABELS: Record<string, string> = {
+  overview: "Overview", batches: "My Batches", live_classes: "Live Classes",
+  lectures: "Recorded Lectures", assignments: "Assignments", doubts: "Doubt Forum",
+  materials: "Study Materials", notifications: "Announcements", attendance: "Attendance",
+  fees: "My Payments", profile: "Profile & Settings",
+};
+const SECTION_GROUPS: { title: string; keys: string[] }[] = [
+  { title: "Main", keys: ["overview"] },
+  { title: "My Learning", keys: ["batches","live_classes","lectures","assignments","tests","materials"] },
+  { title: "Track & Support", keys: ["attendance","fees","doubts","notifications"] },
+  { title: "Institute & Account", keys: ["reports","users","permissions","profile"] },
+];
 function ytId(url: string) {
   if (!url) return "";
   const m = url.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{6,})/);
@@ -74,6 +100,18 @@ export default function DashboardPage() {
   const [planBatch, setPlanBatch] = useState("");
   const [planForm, setPlanForm] = useState({ name: "Monthly", price: "", mrp: "", duration_days: "30", features: "" });
   const [selPlan, setSelPlan] = useState<Record<string, string>>({});
+  // Doubt Forum state
+  const [forumTab, setForumTab] = useState<"recent" | "unanswered" | "mine" | "helpful">("recent");
+  const [forumSearch, setForumSearch] = useState("");
+  const [forumSubject, setForumSubject] = useState("");
+  const [forumBatch, setForumBatch] = useState("");
+  const [forumStatus, setForumStatus] = useState("");
+  const [forumForm, setForumForm] = useState({ title: "", body: "", subject: "", batch_id: "", image_url: "" });
+  const [showAsk, setShowAsk] = useState(false);
+  const [openQ, setOpenQ] = useState("");
+  const [ansText, setAnsText] = useState<Record<string, string>>({});
+  const [replyTo, setReplyTo] = useState<Record<string, string>>({});
+  const [dataLoading, setDataLoading] = useState(false);
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Cashfree return landing: /dashboard?section=batches&paid=1 (or payment=failed)
@@ -110,16 +148,112 @@ export default function DashboardPage() {
     if (data) setProfEdit({ full_name: s(data, "full_name"), mobile: s(data, "mobile"), class_label: s(data, "class_label"), board: s(data, "board"), subject: s(data, "subject"), child_name: s(data, "child_name") });
   }
 
+  // ---- Data loading, scoped by role ----
+  // Root cause (audit #2/#5): loadAll used to fetch EVERY row of EVERY
+  // table for EVERY role — a student received all profiles, fees and
+  // payments. Now each role only fetches what it may see: students/parents
+  // fetch only their own enrolments, subscriptions, payments, fees,
+  // attendance, submissions and results, and batch content only for
+  // batches they hold an active enrolment/subscription for. Admin still
+  // loads everything; teachers load only their own batches + their
+  // students. NOTE: this is a frontend query scope, not a substitute for
+  // per-batch RLS — the Supabase policies remain the permissive
+  // authenticated-user set (see AUDIT.md). Batches + plans are the public
+  // catalogue, so all roles read them (needed to browse and buy).
   async function loadAll() {
-    const tables = ["batches","enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","announcements","notifications","fees","attendance","profiles","role_permissions","enquiries","teacher_requests","onboarding_invites","courses","coupons","timetable","course_enrollments","payments","batch_plans","subscriptions"];
+    if (!profile) return;
+    setDataLoading(true);
+    const role = profile.role;
     const out: Record<string, Row[]> = {};
-    for (const t of tables) {
+    const fetchAll = async (t: string) => {
       const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
       out[t] = (d as Row[]) || [];
+    };
+    const fetchEq = async (t: string, col: string, val: string) => {
+      const { data: d } = await supabase.from(t).select("*").eq(col, val).order("created_at", { ascending: false }).limit(200);
+      out[t] = (d as Row[]) || [];
+    };
+    const fetchIn = async (t: string, col: string, vals: string[]) => {
+      if (!vals.length) { out[t] = []; return; }
+      const { data: d } = await supabase.from(t).select("*").in(col, vals).order("created_at", { ascending: false }).limit(200);
+      out[t] = (d as Row[]) || [];
+    };
+    // Profiles are needed for names (teachers, classmates in a forum).
+    // Only id/name/role/class/subject are fetched for non-admins.
+    if (role === "admin") {
+      await fetchAll("profiles");
+    } else {
+      const { data: d } = await supabase.from("profiles").select("id,full_name,email,role,class_label,board,subject,child_name,child_student_id").order("created_at", { ascending: false }).limit(200);
+      out.profiles = (d as Row[]) || [];
+    }
+    await fetchAll("batches");
+    await fetchAll("batch_plans");
+    await fetchAll("role_permissions");
+    await fetchAll("announcements");
+    await fetchAll("courses");
+    await fetchAll("coupons");
+    if (role === "admin") {
+      for (const t of ["enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","notifications","fees","attendance","enquiries","teacher_requests","onboarding_invites","timetable","course_enrollments","payments","subscriptions","doubt_questions","doubt_answers","doubt_votes"]) await fetchAll(t);
+    } else if (role === "teacher") {
+      const myBatches = (out.batches || []).filter(b => s(b, "teacher_id") === profile.id).map(b => s(b, "id"));
+      await fetchAll("enrollments");
+      await fetchAll("subscriptions");
+      await fetchIn("lectures", "batch_id", myBatches);
+      await fetchIn("materials", "batch_id", myBatches);
+      await fetchIn("assignments", "batch_id", myBatches);
+      await fetchIn("tests", "batch_id", myBatches);
+      await fetchIn("live_classes", "batch_id", myBatches);
+      await fetchIn("timetable", "batch_id", myBatches);
+      await fetchIn("attendance", "batch_id", myBatches);
+      await fetchIn("doubt_questions", "batch_id", myBatches);
+      const qIds = (out.doubt_questions || []).map(q => s(q, "id"));
+      await fetchIn("doubt_answers", "question_id", qIds);
+      await fetchAll("doubts");
+      await fetchAll("submissions");
+      await fetchAll("test_results");
+      await fetchEq("notifications", "user_id", profile.id);
+      out.fees = []; out.payments = []; out.enquiries = []; out.teacher_requests = []; out.onboarding_invites = []; out.course_enrollments = []; out.doubt_votes = [];
+      await fetchAll("doubt_votes");
+    } else {
+      // student / parent: everything is scoped to the effective student.
+      // For a parent, the linked child id comes from the profile itself
+      // (data.profiles is still loading on the first pass, so do not
+      // rely on the derived childProfile here).
+      const eid = role === "parent" && profile.child_student_id ? String(profile.child_student_id) : effectiveId;
+      await fetchEq("enrollments", "student_id", eid);
+      await fetchEq("subscriptions", "student_id", eid);
+      await fetchEq("payments", "student_id", eid);
+      await fetchEq("fees", "student_id", eid);
+      await fetchEq("attendance", "student_id", eid);
+      await fetchEq("submissions", "student_id", eid);
+      await fetchEq("test_results", "student_id", eid);
+      await fetchEq("notifications", "user_id", profile.id);
+      await fetchEq("course_enrollments", "student_id", eid);
+      // Batch content only for batches with an active enrolment/subscription.
+      const tStr = new Date().toISOString().slice(0, 10);
+      const activeIds = Array.from(new Set([
+        ...(out.subscriptions || []).filter(x => s(x, "status") !== "cancelled" && (!s(x, "valid_until") || s(x, "valid_until") >= tStr)).map(x => s(x, "batch_id")),
+        ...(out.enrollments || []).filter(e => (s(e, "subscription_status") || "active") === "active" && (!s(e, "valid_until") || s(e, "valid_until") >= tStr)).map(e => s(e, "batch_id")),
+      ]));
+      await fetchIn("lectures", "batch_id", activeIds);
+      await fetchIn("materials", "batch_id", activeIds);
+      await fetchIn("assignments", "batch_id", activeIds);
+      await fetchIn("tests", "batch_id", activeIds);
+      await fetchIn("live_classes", "batch_id", activeIds);
+      await fetchIn("timetable", "batch_id", activeIds);
+      // Forum: questions in my batches + my own questions anywhere.
+      const { data: dq } = await supabase.from("doubt_questions").select("*").order("created_at", { ascending: false }).limit(200);
+      out.doubt_questions = ((dq as Row[]) || []).filter(q => activeIds.includes(s(q, "batch_id")) || s(q, "student_id") === eid);
+      const qIds = (out.doubt_questions || []).map(q => s(q, "id"));
+      await fetchIn("doubt_answers", "question_id", qIds);
+      await fetchAll("doubt_votes");
+      await fetchEq("doubts", "student_id", eid);
+      out.enquiries = []; out.teacher_requests = []; out.onboarding_invites = [];
     }
     setData(out);
-    setCounts({ batches: out.batches.length, lectures: out.lectures.length, assignments: out.assignments.length, tests: out.tests.length, fees: out.fees.length, doubts: out.doubts.filter(r => s(r, "status") === "open").length });
+    setCounts({ batches: out.batches.length, lectures: out.lectures.length, assignments: out.assignments.length, tests: out.tests.length, fees: out.fees.length, doubts: (out.doubt_questions || []).filter(r => s(r, "status") === "open").length });
     setPerms(out.role_permissions);
+    setDataLoading(false);
   }
 
   const profiles = data.profiles || [];
@@ -168,7 +302,18 @@ export default function DashboardPage() {
     return row ? Boolean(row.enabled) : true;
   }
   function isAdminOnly(key: string) { return key === "users" || key === "permissions"; }
-  function openSection(key: string) { setSection(key); setDrawer(false); setMoreOpen(false); setMsg(""); window.scrollTo({ top: 0 }); }
+  const allowedSections = (role?: string) => ROLE_SECTIONS[role || "student"] || ROLE_SECTIONS.student;
+  const sectionLabel = (key: string) => {
+    if (profile?.role === "student" || profile?.role === "parent") return STUDENT_LABELS[key] || FEATURES[FEATURE_KEYS.indexOf(key as never)] || key;
+    return FEATURES[FEATURE_KEYS.indexOf(key as never)] || key;
+  };
+  function openSection(key: string) {
+    // Route protection: a role may only open its own sections. Trying to
+    // open Reports/Users/Permissions as a student lands on Overview with
+    // an explanation instead of the section.
+    if (profile && !allowedSections(profile.role).includes(key)) { setSection("overview"); setMsg("That section is not available for your role."); setDrawer(false); setMoreOpen(false); return; }
+    setSection(key); setDrawer(false); setMoreOpen(false); setMsg(""); window.scrollTo({ top: 0 });
+  }
   async function logout() { await supabase.auth.signOut(); router.push("/"); }
   async function togglePerm(row: Row) {
     const { error } = await supabase.from("role_permissions").update({ enabled: !row.enabled }).eq("id", row.id as string);
@@ -361,6 +506,62 @@ export default function DashboardPage() {
     const { error } = await supabase.from("doubts").update({ answer: ans, status: "answered" }).eq("id", did);
     if (error) setMsg(error.message); else { setMsg("Answer posted."); loadAll(); }
   }
+  // ---- Doubt Discussion Forum (doubt_questions / doubt_answers / doubt_votes) ----
+  async function askForumQuestion(e: React.FormEvent) {
+    e.preventDefault(); setMsg("");
+    if (!forumForm.title.trim() || !forumForm.body.trim()) return setMsg("A title and a detailed description are required.");
+    if (!forumForm.batch_id) return setMsg("Pick the batch this doubt belongs to.");
+    const { error } = await supabase.from("doubt_questions").insert({
+      student_id: effectiveId, student_name: effectiveName, batch_id: forumForm.batch_id,
+      subject: forumForm.subject || "General", title: forumForm.title.trim(),
+      body: forumForm.body.trim(), image_url: forumForm.image_url.trim() || null, status: "open",
+    });
+    if (error) { setMsg(error.message.includes("doubt_questions") ? "The doubt forum tables are not set up yet — ask Admin to run supabase/add-doubt-forum.sql in Supabase." : error.message); return; }
+    setForumForm({ title: "", body: "", subject: "", batch_id: "", image_url: "" }); setShowAsk(false);
+    setMsg("Your doubt is posted — classmates and teachers in this batch can answer it."); loadAll();
+  }
+  async function postForumAnswer(qid: string, parentId?: string) {
+    const key = parentId ? `${qid}:${parentId}` : qid;
+    const body = (ansText[key] || "").trim();
+    if (!body) return setMsg("Write your answer first.");
+    const q = (data.doubt_questions || []).find(x => s(x, "id") === qid);
+    const { error } = await supabase.from("doubt_answers").insert({
+      question_id: qid, author_id: profile?.id, author_name: profile?.full_name || "User",
+      author_role: profile?.role || "student", body, parent_answer_id: parentId || null, is_accepted: false,
+    });
+    if (error) { setMsg(error.message); return; }
+    // The question is now answered; notify the asker (unless they answered it themselves).
+    await supabase.from("doubt_questions").update({ status: "answered" }).eq("id", qid).eq("status", "open");
+    if (q && s(q, "student_id") !== profile?.id) {
+      await supabase.from("notifications").insert({ user_id: s(q, "student_id"), title: `New answer to your doubt: ${s(q, "title")}`, body: `${profile?.full_name || "Someone"} answered your question. Open Doubt Forum to read it.` });
+    }
+    setAnsText({ ...ansText, [key]: "" }); setReplyTo({ ...replyTo, [key]: "" });
+    setMsg("Answer posted."); loadAll();
+  }
+  async function toggleVote(answerId: string) {
+    if (!profile) return;
+    const existing = (data.doubt_votes || []).find(v => s(v, "answer_id") === answerId && s(v, "user_id") === profile.id);
+    if (existing) {
+      const { error } = await supabase.from("doubt_votes").delete().eq("id", s(existing, "id"));
+      if (error) setMsg(error.message); else loadAll();
+    } else {
+      const { error } = await supabase.from("doubt_votes").insert({ answer_id: answerId, user_id: profile.id, vote: 1 });
+      if (error) setMsg(error.message); else loadAll();
+    }
+  }
+  async function acceptAnswer(qid: string, answerId: string) {
+    const q = (data.doubt_questions || []).find(x => s(x, "id") === qid);
+    if (!q) return;
+    // Only the asker (or a teacher) may mark an answer accepted.
+    if (s(q, "student_id") !== effectiveId && profile?.role !== "teacher" && profile?.role !== "admin") return setMsg("Only the student who asked, or a teacher, can accept an answer.");
+    await supabase.from("doubt_answers").update({ is_accepted: false }).eq("question_id", qid);
+    const { error } = await supabase.from("doubt_answers").update({ is_accepted: true }).eq("id", answerId);
+    if (error) { setMsg(error.message); return; }
+    await supabase.from("doubt_questions").update({ status: "resolved" }).eq("id", qid);
+    setMsg("Answer marked as accepted — the doubt is resolved."); loadAll();
+  }
+  const forumAnswers = (qid: string) => (data.doubt_answers || []).filter(a => s(a, "question_id") === qid);
+  const forumVotes = (answerId: string) => (data.doubt_votes || []).filter(v => s(v, "answer_id") === answerId).reduce((t, v) => t + n(v, "vote"), 0);
   // ---- notifications / announcements ----
   async function createAnnouncement(e: React.FormEvent) {
     e.preventDefault(); setMsg("");
@@ -447,29 +648,38 @@ export default function DashboardPage() {
   const sidebar = (
     <div className="flex h-full flex-col gap-1 overflow-y-auto p-3">
       <div className="mb-2 rounded-2xl bg-brand-tint p-3"><b className="block">{profile.full_name}</b><span className="text-xs font-bold capitalize text-brand-dark">{profile.role}{profile.class_label ? ` · ${profile.class_label}` : ""}{profile.board ? ` · ${profile.board}` : ""}</span><span className="mt-1 block text-xs text-slate-500">{profile.email}</span>{childProfile && <span className="mt-1 block text-xs font-bold text-brand-dark">Viewing child: {effectiveName}</span>}</div>
-      <p className="px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">All features · 15 sections</p>
-      {["Main","Learning","Track & Support","Institute & Account"].map((group, gi) => (
-        <div key={group}>
-          <p className="mt-3 px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{group}</p>
-          {FEATURE_KEYS.filter((_, i) => Math.floor(i / 4) === gi || (gi === 3 && i >= 12)).map((key) => {
-            const i = FEATURE_KEYS.indexOf(key);
+      <p className="px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{profile.role === "student" ? "My learning · 11 sections" : profile.role === "admin" ? "All features · 15 sections" : `${profile.role} · ${allowedSections(profile.role).length} sections`}</p>
+      {SECTION_GROUPS.map((group) => {
+        const keys = group.keys.filter(k => allowedSections(profile.role).includes(k));
+        if (!keys.length) return null;
+        return (
+        <div key={group.title}>
+          <p className="mt-3 px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{group.title}</p>
+          {keys.map((key) => {
+            const i = FEATURE_KEYS.indexOf(key as never);
             const enabled = isEnabled(key);
             const adminOnly = isAdminOnly(key) && profile.role !== "admin";
             return (
               <button key={key} onClick={() => openSection(key)} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-bold ${section===key ? "bg-brand-tint text-brand-dark" : "text-slate-600 hover:bg-slate-100"}`}>
                 <span className="w-5 text-center">{["🏠","📚","▶","📄","✏","📝","📹","✓","₹","💬","🔔","📊","👥","🔐","👤"][i]}</span>
-                <span className="flex-1">{FEATURES[i]}</span>
+                <span className="flex-1">{sectionLabel(key)}</span>
                 {adminOnly && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-500">Admin</span>}
                 {!enabled && !adminOnly && <span className="rounded-full bg-accent-tint px-2 py-0.5 text-[10px] font-extrabold text-accent-ink">Off</span>}
               </button>
             );
           })}
         </div>
-      ))}
+        );
+      })}
       <button onClick={logout} className="mt-4 rounded-xl border px-3 py-2.5 text-left text-sm font-bold text-red-700">Log out</button>
     </div>
   );
-  const sectionEnabled = section === "overview" || section === "profile" || isEnabled(section);
+  // Route protection: the section must be in this role's list AND enabled
+  // in the permissions matrix. Reports/Users/Permissions are never in the
+  // student or parent list, so they cannot be opened by any means —
+  // switching section state, a deep link, or the More sheet.
+  const sectionAllowed = allowedSections(profile?.role).includes(section);
+  const sectionEnabled = sectionAllowed && (section === "overview" || section === "profile" || isEnabled(section));
   const sectionAdminOnly = isAdminOnly(section) && profile.role !== "admin";
   const sel = (label: string, value: string, onChange: (v: string) => void, opts: { v: string; l: string }[], allLabel = "— pick —") => (
     <div><label className="label">{label}</label><select className="input" value={value} onChange={e => onChange(e.target.value)}><option value="">{allLabel}</option>{opts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select></div>
@@ -511,6 +721,68 @@ export default function DashboardPage() {
             const overdueFees = myFees.filter(f => s(f, "status") === "pending");
             const pendingReqs = (data.teacher_requests || []).filter(r => s(r, "status") === "pending");
             const openDoubts = (data.doubts || []).filter(d => s(d, "status") === "open");
+            // ---- Student / Parent overview: only the student's own real data ----
+            // No institute-wide KPIs here (total students, leads, teacher
+            // requests are Admin numbers and never belonged on a student page).
+            if (profile.role === "student" || profile.role === "parent") {
+              const myEnrols = (data.enrollments || []).filter(e => s(e, "student_id") === effectiveId);
+              const myBatches = myEnrols.map(e => batches.find(b => s(b, "id") === s(e, "batch_id"))).filter(Boolean) as Row[];
+              const upcomingLive = (data.live_classes || []).filter(c => s(c, "starts_at") && new Date(s(c, "starts_at")) >= new Date()).sort((a, b) => s(a, "starts_at").localeCompare(s(b, "starts_at"))).slice(0, 3);
+              const recentLectures = (data.lectures || []).slice(0, 3);
+              const pendingAsg = (data.assignments || []).filter(a => !(data.submissions || []).some(x => s(x, "assignment_id") === s(a, "id") && s(x, "student_id") === effectiveId)).slice(0, 5);
+              const myQs = (data.doubt_questions || []).filter(q => s(q, "student_id") === effectiveId);
+              const answeredMine = myQs.filter(q => s(q, "status") !== "open");
+              const recentAnn = (data.announcements || []).slice(0, 3);
+              const myPays = (data.payments || []).filter(p => s(p, "student_id") === effectiveId);
+              const lastPay = myPays[0];
+              const myAtt = (data.attendance || []).filter(a => s(a, "student_id") === effectiveId);
+              const attPct = myAtt.length ? Math.round(myAtt.filter(a => s(a, "status") === "present").length / myAtt.length * 100) : null;
+              return (
+              <div>
+                <div className="rounded-3xl bg-gradient-to-r from-brand to-brand-dark p-6 text-white">
+                  <p className="text-xs font-extrabold uppercase tracking-widest text-amber-300">Welcome back · U++ Academy</p>
+                  <h1 className="mt-1 text-2xl font-extrabold">Namaste, {effectiveName.split(" ")[0] || profile.full_name.split(" ")[0]} 👋</h1>
+                  <p className="mt-1 text-sm opacity-90">{myBatches.length ? `You are enrolled in ${myBatches.length} batch${myBatches.length > 1 ? "es" : ""}.` : "You are not enrolled in any batch yet — explore batches below to start learning."}{attPct !== null ? ` Your attendance so far: ${attPct}%.` : ""}</p>
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{myBatches.length}</b><span className="block text-xs font-bold opacity-80">My Batches</span></div>
+                    <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{pendingAsg.length}</b><span className="block text-xs font-bold opacity-80">Pending Assignments</span></div>
+                    <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{(data.doubt_questions || []).filter(q => s(q, "status") === "open").length}</b><span className="block text-xs font-bold opacity-80">Open Doubts</span></div>
+                    <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{attPct !== null ? `${attPct}%` : "—"}</b><span className="block text-xs font-bold opacity-80">My Attendance</span></div>
+                  </div>
+                </div>
+                <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="font-extrabold">Currently enrolled batches</h3><button onClick={() => openSection("batches")} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
+                  {myBatches.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet — explore batches, pick a plan and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{myBatches.map(b => { const sub = mySubs.find(x => s(x, "batch_id") === s(b, "id")); const st = sub ? subStatus(sub) : "active"; return <li key={s(b, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")}</span><span className="flex items-center gap-2 text-xs font-bold text-slate-500">{sub ? `${s(sub, "plan_name") || "Plan"} · Valid until ${s(sub, "valid_until") || "—"}` : "Enrolled"}{st === "expired" && <button onClick={() => openSection("batches")} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Upcoming live classes</h3>
+                  {upcomingLive.length === 0 ? <p className="mt-2 text-sm text-slate-500">No live classes scheduled ahead.</p> : <ul className="mt-2 space-y-1 text-sm">{upcomingLive.map(c => <li key={s(c, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(c, "title")}</b> · {s(c, "subject")}</span><span className="text-slate-500">{new Date(s(c, "starts_at")).toLocaleString()}</span></li>)}</ul>}
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Recently uploaded lectures</h3>
+                  {recentLectures.length === 0 ? <p className="mt-2 text-sm text-slate-500">No lectures in your batches yet.</p> : <ul className="mt-2 space-y-1 text-sm">{recentLectures.map(l => <li key={s(l, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(l, "title")}</b> · {batchName(s(l, "batch_id"))} · {s(l, "subject")}</li>)}</ul>}
+                  <button onClick={() => openSection("lectures")} className="mt-2 text-xs font-bold text-brand-dark">All recorded lectures →</button>
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Pending assignments</h3>
+                  {pendingAsg.length === 0 ? <p className="mt-2 text-sm text-slate-500">Nothing pending — you are all caught up.</p> : <ul className="mt-2 space-y-1 text-sm">{pendingAsg.map(a => <li key={s(a, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(a, "title")}</b> · {s(a, "subject")}</span><span className="text-slate-500">Due {s(a, "due_date") || "—"}</span></li>)}</ul>}
+                  <button onClick={() => openSection("assignments")} className="mt-2 text-xs font-bold text-brand-dark">Go to Assignments →</button>
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Recently answered doubts</h3>
+                  {answeredMine.length === 0 ? <p className="mt-2 text-sm text-slate-500">{myQs.length === 0 ? "You have not asked any doubt yet." : "Your doubts are still waiting for an answer."}</p> : <ul className="mt-2 space-y-1 text-sm">{answeredMine.slice(0, 3).map(q => <li key={s(q, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(q, "title")}</b> · {forumAnswers(s(q, "id")).length} answer(s) · {s(q, "status")}</li>)}</ul>}
+                  <button onClick={() => openSection("doubts")} className="mt-2 text-xs font-bold text-brand-dark">Open Doubt Forum →</button>
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Recent announcements</h3>
+                  {recentAnn.length === 0 ? <p className="mt-2 text-sm text-slate-500">No announcements yet.</p> : <ul className="mt-2 space-y-1 text-sm">{recentAnn.map(a => <li key={s(a, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(a, "title")}</b> — {s(a, "body")}</li>)}</ul>}
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Payment status</h3>
+                  {myPays.length === 0 ? <p className="mt-2 text-sm text-slate-500">No payments yet. Buy a batch plan to see it here.</p> : <p className="mt-2 text-sm">Latest payment: <b>₹{String(lastPay.amount)}</b> for {batchName(s(lastPay, "batch_id"))} — <b className="capitalize">{s(lastPay, "status")}</b> · Order {s(lastPay, "order_id")}</p>}
+                  <button onClick={() => openSection("fees")} className="mt-2 text-xs font-bold text-brand-dark">My Payments →</button>
+                </div>
+                <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {["lectures","assignments","live_classes","doubts"].map(k => <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{sectionLabel(k)}</button>)}
+                </div>
+                <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here. Fees are paid online via Cashfree; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p><InstallAppButton className="mt-3" /></div>
+              </div>
+              );
+            }
             const kpis: [string, string][] = [
               ["Total Students", String(isStaff ? students.length : 1)],
               ["Fees Collected This Month", `₹${collectedMonth}`],
@@ -535,16 +807,13 @@ export default function DashboardPage() {
                 <ul className="mt-2 space-y-2 text-sm">
                   <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Absent today: <b>{absentToday.length}</b>{absentToday.length ? ` — ${absentToday.map(a => nameOf(s(a, "student_id"))).join(", ")}` : ""}</span><button onClick={() => openSection("attendance")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Attendance →</button></li>
                   <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Overdue / pending fees: <b>{overdueFees.length}</b> (₹{pendingFees})</span><button onClick={() => openSection("fees")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Fees →</button></li>
-                  <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Pending teacher requests: <b>{pendingReqs.length}</b></span><button onClick={() => openSection("users")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Users →</button></li>
+                  {profile.role === "admin" && <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Pending teacher requests: <b>{pendingReqs.length}</b></span><button onClick={() => openSection("users")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Users →</button></li>}
                   <li className="flex items-center justify-between gap-2 rounded-xl border p-3"><span>Unanswered doubts: <b>{openDoubts.length}</b></span><button onClick={() => openSection("doubts")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Doubts →</button></li>
                 </ul>
               </div>
-              {(profile.role === "student" || profile.role === "parent") && <div className="card mt-5"><h3 className="font-extrabold">My subscriptions{childProfile ? ` — ${effectiveName}` : ""}</h3>
-                {mySubs.length === 0 ? <p className="mt-2 text-sm text-slate-500">No subscription yet. Go to Batches, pick a plan (Monthly / Quarterly / Yearly / Full Course) and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{mySubs.map(x => { const st = subStatus(x); const nearExpiry = st === "active" && s(x, "valid_until") && new Date(s(x, "valid_until")).getTime() - Date.now() < 7 * 86400000; return <li key={s(x, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{batchName(s(x, "batch_id"))}</b> — {s(x, "plan_name") || "Plan"} · ₹{String(x.amount_paid ?? 0)} · Valid until {s(x, "valid_until") || "—"}</span><span className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-extrabold ${st === "active" ? "bg-brand-tint text-brand-dark" : "bg-red-100 text-red-700"}`}>{st === "active" ? "Active" : "Expired"}</span>{(st === "expired" || nearExpiry) && <button onClick={() => { openSection("batches"); }} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
-              </div>}
               <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {JUMP_TO.filter(k => isEnabled(k)).map(k => { const i = FEATURE_KEYS.indexOf(k as never); return <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{FEATURES[i]}</button>; })}
+                {JUMP_TO.filter(k => allowedSections(profile.role).includes(k) && isEnabled(k)).map(k => { const i = FEATURE_KEYS.indexOf(k as never); return <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{sectionLabel(k)}</button>; })}
               </div>
               <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are paid online via Cashfree when Admin has added the Cashfree keys in Vercel; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p><InstallAppButton className="mt-3" /></div>
             </div>
@@ -570,7 +839,7 @@ export default function DashboardPage() {
           {section !== "overview" && section !== "profile" && (
             <div>
               {!sectionEnabled || sectionAdminOnly ? (
-                <div className="card"><h2 className="text-xl font-extrabold">{FEATURES[FEATURE_KEYS.indexOf(section as never)] || section}</h2><p className="mt-2 text-sm text-slate-600">{sectionAdminOnly ? "This section is Admin-only." : "This feature is switched Off for your role. Ask an Admin to turn it on in Dashboard > Permissions."}</p></div>
+                <div className="card"><h2 className="text-xl font-extrabold">{sectionLabel(section)}</h2><p className="mt-2 text-sm text-slate-600">{!sectionAllowed ? "This section is not available for your role. Reports, user management and permissions belong to the Admin / Teacher dashboard." : sectionAdminOnly ? "This section is Admin-only." : "This feature is switched Off for your role. Ask an Admin to turn it on in Dashboard > Permissions."}</p><button onClick={() => openSection("overview")} className="btn-brand mt-3 !py-2 text-sm">Back to Overview</button></div>
               ) : section === "permissions" ? (
                 <div className="card"><h2 className="text-xl font-extrabold">Role Permissions — 14 features</h2><p className="mt-1 text-sm text-slate-600">Admin only. Toggle a feature for a role. Students, teachers and parents will see disabled features tagged “Off” in their sidebar.</p>
                   <div className="mt-4 space-y-2">{perms.map(p => <div key={String(p.id)} className="flex items-center justify-between gap-3 rounded-xl border p-3 text-sm"><span className="font-bold capitalize">{String(p.role)} · {String(p.feature_key)}</span><button onClick={() => togglePerm(p)} disabled={profile.role!=="admin"} className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${p.enabled ? "bg-brand text-white" : "bg-slate-200"}`}>{p.enabled ? "On" : "Off"}</button></div>)}</div>
@@ -578,7 +847,8 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div>
-                  <h2 className="text-xl font-extrabold">{FEATURES[FEATURE_KEYS.indexOf(section as never)] || section}</h2>
+                  <h2 className="text-xl font-extrabold">{sectionLabel(section)}</h2>
+                  {dataLoading && <p className="mt-2 text-sm text-slate-400">Loading…</p>}
                   {renderSection()}
                 </div>
               )}
@@ -588,10 +858,10 @@ export default function DashboardPage() {
       </div>
       {drawer && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setDrawer(false)} /><aside className="absolute left-0 top-0 h-full w-80 max-w-[85vw] bg-white shadow-xl">{sidebar}</aside></div>}
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] pt-2 backdrop-blur md:hidden">
-        {["overview","batches","lectures","assignments"].map(k => { const i = FEATURE_KEYS.indexOf(k as never); const label = k==="overview" ? "Home" : FEATURES[i]; return <button key={k} onClick={()=>openSection(k)} className={`flex flex-col items-center gap-0.5 py-1 text-[11px] font-bold ${section===k ? "text-brand" : "text-slate-400"}`}>{k==="overview"?"🏠":k==="batches"?"📚":k==="lectures"?"▶":"✏"}{label}</button>; })}
+        {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","lectures","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="doubts" ? "Doubt" : "Tasks"; return <button key={k} onClick={()=>openSection(k)} className={`flex flex-col items-center gap-0.5 py-1 text-[11px] font-bold ${section===k ? "text-brand" : "text-slate-400"}`}>{k==="overview"?"🏠":k==="batches"?"📚":k==="lectures"?"▶":k==="doubts"?"💬":"✏"}{label}</button>; })}
         <button onClick={()=>setMoreOpen(true)} className={`flex flex-col items-center gap-0.5 py-1 text-[11px] font-bold ${moreOpen ? "text-brand" : "text-slate-400"}`}>⋯ More</button>
       </nav>
-      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4 pb-8"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="rounded-lg border px-3 py-1 font-bold">Close</button></div><div className="grid grid-cols-3 gap-2">{FEATURE_KEYS.map((k,i)=>(<button key={k} onClick={()=>openSection(k)} className="rounded-2xl border p-3 text-center text-xs font-bold">{FEATURES[i]}{!isEnabled(k) && <span className="mt-1 block text-[10px] text-accent-ink">Off</span>}</button>))}</div><button onClick={logout} className="mt-4 w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
+      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4 pb-8"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="rounded-lg border px-3 py-1 font-bold">Close</button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>(<button key={k} onClick={()=>openSection(k)} className="rounded-2xl border p-3 text-center text-xs font-bold">{sectionLabel(k)}{!isEnabled(k) && <span className="mt-1 block text-[10px] text-accent-ink">Off</span>}</button>))}</div><button onClick={logout} className="mt-4 w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
     </div>
   );
 
@@ -659,7 +929,7 @@ export default function DashboardPage() {
           </div>}
           <div className="mt-3 space-y-2">
             {(data.courses || []).length === 0 && <p className="text-sm text-slate-500">No courses yet.</p>}
-            {(data.courses || []).map(c => { const enrolled = (data.course_enrollments || []).filter(e => s(e, "course_id") === s(c, "id")); return <div key={s(c, "id")} className="rounded-xl border p-3 text-sm"><b>{s(c, "title")}</b> — {s(c, "class_label")} · {s(c, "subject")}{s(c, "bundle_name") ? ` · Bundle: ${s(c, "bundle_name")}` : ""} · {s(c, "is_paid") === "true" ? `₹${String(c.price ?? 0)} (paid)` : "Free"} · {enrolled.length} enrolled{s(c, "description") ? ` · ${s(c, "description")}` : ""}<p className="text-xs text-slate-500">{enrolled.length ? enrolled.map(e => `${nameOf(s(e, "student_id"))} (₹${String(e.price_paid ?? 0)}${s(e, "coupon_code") ? `, coupon ${s(e, "coupon_code")}` : ""})`).join(", ") : "Nobody enrolled yet."}</p></div>; })}
+            {(data.courses || []).map(c => { const enrolled = (data.course_enrollments || []).filter(e => s(e, "course_id") === s(c, "id")); const myCourse = enrolled.some(e => s(e, "student_id") === effectiveId); return <div key={s(c, "id")} className="rounded-xl border p-3 text-sm"><b>{s(c, "title")}</b> — {s(c, "class_label")} · {s(c, "subject")}{s(c, "bundle_name") ? ` · Bundle: ${s(c, "bundle_name")}` : ""} · {s(c, "is_paid") === "true" ? `₹${String(c.price ?? 0)} (paid)` : "Free"} · {enrolled.length} enrolled{s(c, "description") ? ` · ${s(c, "description")}` : ""}{!isStaff && myCourse && <span className="ml-2 rounded-full bg-brand-tint px-2 py-0.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span>}<p className="text-xs text-slate-500">{isStaff ? (enrolled.length ? enrolled.map(e => `${nameOf(s(e, "student_id"))} (₹${String(e.price_paid ?? 0)}${s(e, "coupon_code") ? `, coupon ${s(e, "coupon_code")}` : ""})`).join(", ") : "Nobody enrolled yet.") : ""}</p></div>; })}
           </div>
         </div>
         <div className="mt-4 space-y-2">
@@ -677,6 +947,12 @@ export default function DashboardPage() {
                 const mySub = mySubs.find(x => s(x, "batch_id") === bid && subStatus(x) === "active") || mySubs.find(x => s(x, "batch_id") === bid);
                 const selId = selPlan[bid] || (plans[0] ? s(plans[0], "id") : "");
                 const sel = plans.find(x => s(x, "id") === selId);
+                // Root cause (audit #3): an enrolment with no subscription
+                // row (Admin/manual enrol, or a free enrol before plans
+                // existed) fell through to the "Pay again" button even
+                // though the student was already enrolled. An enrolment
+                // row is the source of truth — it means enrolled.
+                if (mine && !mySub) return <div className="mt-2"><span className="inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled</span></div>;
                 if (mine && mySub && subStatus(mySub) === "active") return <div className="mt-2"><span className="inline-block rounded-full bg-brand-tint px-3 py-1.5 text-xs font-extrabold text-brand-dark">✓ Enrolled — {s(mySub, "plan_name") || "Batch"} · Valid until {s(mySub, "valid_until") || "—"}</span></div>;
                 if (mine && mySub && subStatus(mySub) === "expired") return <div className="mt-2"><span className="inline-block rounded-full bg-red-100 px-3 py-1.5 text-xs font-extrabold text-red-700">Subscription expired {s(mySub, "valid_until")}</span><button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand ml-2 !py-2 text-xs">Renew — Pay ₹{sel ? String(sel.price) : String(b.price)} via Cashfree</button></div>;
                 if (full) return <span className="mt-2 inline-block rounded-full bg-slate-200 px-3 py-1.5 text-xs font-extrabold text-slate-500">Batch full</span>;
@@ -686,7 +962,7 @@ export default function DashboardPage() {
                   <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand mt-2 !py-2 text-xs">{payBusy === bid ? "Starting payment…" : (sel ? n(sel, "price") > 0 : n(b, "price") > 0) ? `Enroll — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree` : "Enroll free"}</button>
                 </div>;
               })()}
-              <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
+              {isStaff && <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="mt-2 ml-2 rounded-lg border px-3 py-1 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>}
               {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
             </div>;
           })}
@@ -849,21 +1125,99 @@ export default function DashboardPage() {
           <div><label className="label">Institute UPI ID (shown on receipts)</label><input className="input" value={feeUpiId} onChange={e => setFeeUpiId(e.target.value)} placeholder="e.g. uacademy@okhdfcbank" /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save fee — receipt auto-generated (U++-2026-XXXX)</button><p className="mt-2 text-xs text-slate-500">UPI payments are recorded here only — there is no online payment gateway connected. Collect the payment on the institute UPI ID above and keep the UPI reference.</p></form>}
         {(() => { const list = (data.fees || []).filter(f => viewStudent(f)); const collected = list.filter(f => s(f, "status") === "paid").reduce((t, f) => t + n(f, "amount"), 0); const pending = list.filter(f => s(f, "status") === "pending").reduce((t, f) => t + n(f, "amount"), 0); return <div><div className="mt-3 grid grid-cols-2 gap-3"><div className="card !p-4"><b className="text-xl">₹{collected}</b><span className="block text-xs font-bold text-slate-500">Collected</span></div><div className="card !p-4"><b className="text-xl">₹{pending}</b><span className="block text-xs font-bold text-slate-500">Pending</span></div></div>
+        {profile?.role !== "admin" && <div className="card mt-3"><h3 className="font-extrabold">My Payments — Cashfree</h3>
+          <p className="mt-1 text-sm text-slate-600">Every online payment you made, with its verified status from the database. “Paid” means Cashfree confirmed it and your enrolment was created.</p>
+          <div className="mt-3 space-y-2">
+            {(data.payments || []).length === 0 && <p className="text-sm text-slate-500">No online payments yet — buy a batch plan in My Batches to see it here.</p>}
+            {(data.payments || []).map(p => <div key={s(p, "id")} className="rounded-xl border p-3 text-sm"><b>₹{String(p.amount)}</b> — {batchName(s(p, "batch_id"))} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} · {s(p, "created_at") ? new Date(s(p, "created_at")).toLocaleDateString() : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" || s(p, "status") === "successful" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : s(p, "status") === "refunded" ? "bg-slate-200 text-slate-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status") === "paid" || s(p, "status") === "successful" ? "Successful" : s(p, "status") === "created" || s(p, "status") === "pending" ? "Pending" : s(p, "status")}</span> <a href={`/payment/result?order_id=${encodeURIComponent(s(p, "order_id"))}`} className="ml-2 font-bold text-brand-dark underline">Details →</a></div>)}
+          </div>
+        </div>}
         <div className="mt-4 space-y-2">{list.length === 0 && empty("No fees recorded yet.")}{list.map(f => <div key={s(f, "id")} className="card !p-4"><b className="text-sm">₹{String(f.amount)} — {nameOf(s(f, "student_id"))}</b><p className="text-xs text-slate-500">Receipt {s(f, "receipt_no") || "—"} · {batchName(s(f, "batch_id"))} · Due {s(f, "due_month")} · {s(f, "paid_at") ? `Paid ${new Date(s(f, "paid_at")).toLocaleDateString()}` : "Not paid"}{s(f, "payment_mode") ? ` · ${s(f, "payment_mode")}` : ""}{s(f, "upi_reference") ? ` · UPI ref: ${s(f, "upi_reference")}` : ""}{s(f, "coupon_code") ? ` · Coupon: ${s(f, "coupon_code")}` : ""}{feeUpiId ? ` · Pay UPI: ${feeUpiId}` : ""}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(f, "status") === "paid" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(f, "status")}</span>{profile?.role === "admin" && s(f, "status") === "pending" && <button onClick={() => markPaid(s(f, "id"))} className="btn-brand ml-2 !py-1.5 text-xs">Mark as paid</button>}</div>)}</div></div>; })()}
       </div>
     );
     if (section === "doubts") return (
       <div>
-        <form onSubmit={askDoubt} className="card mt-3"><h3 className="font-extrabold">Ask a doubt</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
-          <div><label className="label">Your doubt / question</label><input required className="input" value={form.question || ""} onChange={e => setForm({ ...form, question: e.target.value })} /></div>
-        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Ask</button></form>
+        <div className="card mt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div><h3 className="font-extrabold">Doubt Discussion Forum</h3><p className="mt-1 text-sm text-slate-600">Ask a question — classmates and teachers in your batches can answer it. You get a notification when someone answers your doubt.</p></div>
+            <button onClick={() => setShowAsk(!showAsk)} className="btn-brand !py-2.5 text-sm">{showAsk ? "Close form" : "＋ Ask a Doubt"}</button>
+          </div>
+          {showAsk && <form onSubmit={askForumQuestion} className="mt-4 grid gap-3 border-t pt-4">
+            <div><label className="label">Batch *</label><select required className="input" value={forumForm.batch_id} onChange={e => setForumForm({ ...forumForm, batch_id: e.target.value })}><option value="">— pick your batch —</option>{batches.filter(b => profile?.role !== "student" || activeBatchIds.has(s(b, "id"))).map(b => <option key={s(b, "id")} value={s(b, "id")}>{s(b, "name")}</option>)}</select></div>
+            <div><label className="label">Subject</label><input className="input" value={forumForm.subject} onChange={e => setForumForm({ ...forumForm, subject: e.target.value })} placeholder="e.g. Mathematics — Algebra" /></div>
+            <div><label className="label">Question title *</label><input required className="input" value={forumForm.title} onChange={e => setForumForm({ ...forumForm, title: e.target.value })} placeholder="e.g. How do I solve quadratic equations by factorisation?" /></div>
+            <div><label className="label">Detailed description *</label><textarea required className="input" rows={4} value={forumForm.body} onChange={e => setForumForm({ ...forumForm, body: e.target.value })} placeholder="Explain what you tried, where you got stuck, and what you need help with…" /></div>
+            <div><label className="label">Screenshot / image URL (optional — no in-app upload yet, paste a public link)</label><input className="input" value={forumForm.image_url} onChange={e => setForumForm({ ...forumForm, image_url: e.target.value })} placeholder="https://… (image link)" /></div>
+            <div><button className="btn-brand !py-2.5 text-sm">Post my doubt</button></div>
+          </form>}
+        </div>
+        <div className="card mt-3">
+          <div className="flex flex-wrap gap-2">
+            <input className="input !w-auto flex-1" placeholder="Search questions…" value={forumSearch} onChange={e => setForumSearch(e.target.value)} />
+            {sel("Subject", forumSubject, setForumSubject, Array.from(new Set((data.doubt_questions || []).map(q => s(q, "subject")).filter(Boolean))).map(x => ({ v: x, l: x })), "All subjects")}
+            {sel("Batch", forumBatch, setForumBatch, batches.map(b => ({ v: s(b, "id"), l: s(b, "name") })), "All batches")}
+            {sel("Status", forumStatus, setForumStatus, [{ v: "open", l: "Open" }, { v: "answered", l: "Answered" }, { v: "resolved", l: "Resolved" }], "All statuses")}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(["recent","unanswered","mine","helpful"] as const).map(t => <button key={t} onClick={() => setForumTab(t)} className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${forumTab === t ? "bg-brand text-white" : "bg-slate-200"}`}>{t === "recent" ? "Recent Questions" : t === "unanswered" ? "Unanswered" : t === "mine" ? "My Questions" : "Most Helpful"}</button>)}
+          </div>
+        </div>
         <div className="mt-4 space-y-2">
-          {(data.doubts || []).filter(d => profile?.role === "admin" ? true : profile?.role === "teacher" ? myBatchIds.includes(s(d, "batch_id")) : s(d, "student_id") === effectiveId).length === 0 && empty("No doubts yet.")}
-          {(data.doubts || []).filter(d => profile?.role === "admin" ? true : profile?.role === "teacher" ? myBatchIds.includes(s(d, "batch_id")) : s(d, "student_id") === effectiveId).map(d => { const did = s(d, "id"); return <div key={did} className="card !p-4"><b className="text-sm">{s(d, "question")}</b><p className="text-xs text-slate-500">{nameOf(s(d, "student_id"))} · {batchName(s(d, "batch_id"))} · {s(d, "status")}</p>
-            {s(d, "answer") ? <p className="mt-2 rounded-xl bg-brand-tint p-3 text-sm"><b>Answer:</b> {s(d, "answer")}</p> : <p className="mt-2 text-sm text-slate-500">Not answered yet.</p>}
-            {isStaff && <div className="mt-2"><textarea className="input" rows={2} placeholder="Write your answer here…" value={doubtAns[did] || ""} onChange={e => setDoubtAns({ ...doubtAns, [did]: e.target.value })} /><button onClick={() => answerDoubt(did)} className="btn-brand mt-2 !py-2 text-xs">Post answer</button></div>}
-          </div>; })}
+          {(() => {
+            let qs = [...(data.doubt_questions || [])];
+            if (forumTab === "unanswered") qs = qs.filter(q => s(q, "status") === "open");
+            if (forumTab === "mine") qs = qs.filter(q => s(q, "student_id") === effectiveId);
+            if (forumTab === "helpful") qs = qs.sort((a, b) => forumAnswers(s(b, "id")).reduce((t, x) => t + forumVotes(s(x, "id")), 0) - forumAnswers(s(a, "id")).reduce((t, x) => t + forumVotes(s(x, "id")), 0));
+            if (forumSearch) qs = qs.filter(q => (s(q, "title") + " " + s(q, "body")).toLowerCase().includes(forumSearch.toLowerCase()));
+            if (forumSubject) qs = qs.filter(q => s(q, "subject") === forumSubject);
+            if (forumBatch) qs = qs.filter(q => s(q, "batch_id") === forumBatch);
+            if (forumStatus) qs = qs.filter(q => s(q, "status") === forumStatus);
+            if (qs.length === 0) return <div className="card text-sm text-slate-500">{(data.doubt_questions || []).length === 0 ? "No doubts yet — be the first to ask one above." : "No questions match these filters."}</div>;
+            return qs.map(q => {
+              const qid = s(q, "id");
+              const answers = forumAnswers(qid);
+              const upvotes = answers.reduce((t, a) => t + forumVotes(s(a, "id")), 0);
+              const accepted = answers.find(a => String(a.is_accepted) === "true");
+              const open = openQ === qid;
+              return <div key={qid} className="card !p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <b className="text-sm">{s(q, "title")}</b>
+                    <p className="text-xs text-slate-500">{s(q, "student_name") || nameOf(s(q, "student_id"))} · {s(q, "subject") || "General"} · {batchName(s(q, "batch_id"))} · {s(q, "created_at") ? new Date(s(q, "created_at")).toLocaleDateString() : "—"}</p>
+                    <p className="mt-1 text-sm text-slate-600">{s(q, "body")}</p>
+                    {s(q, "image_url") && <a className="mt-1 inline-block text-sm font-bold text-brand-dark underline" href={s(q, "image_url")} target="_blank" rel="noreferrer">View screenshot ↗</a>}
+                  </div>
+                  <span className={`rounded-full px-2 py-1 text-xs font-extrabold ${s(q, "status") === "resolved" ? "bg-brand-tint text-brand-dark" : s(q, "status") === "answered" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>{s(q, "status") === "resolved" ? "✓ Resolved" : s(q, "status") === "answered" ? "Answered" : "Open"}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs font-bold text-slate-500">
+                  <span>💬 {answers.length} answer{answers.length === 1 ? "" : "s"}</span>
+                  <span>▲ {upvotes} upvote{upvotes === 1 ? "" : "s"}</span>
+                  {accepted && <span className="text-brand-dark">✓ Accepted answer: {s(accepted, "author_name")}</span>}
+                  <button onClick={() => setOpenQ(open ? "" : qid)} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-700">{open ? "Hide discussion" : "View / answer"}</button>
+                </div>
+                {open && <div className="mt-3 space-y-3 border-t pt-3">
+                  {answers.length === 0 && <p className="text-sm text-slate-500">No answers yet — be the first to help.</p>}
+                  {answers.filter(a => !s(a, "parent_answer_id")).map(a => {
+                    const aid = s(a, "id");
+                    const replies = answers.filter(r => s(r, "parent_answer_id") === aid);
+                    const voted = (data.doubt_votes || []).some(v => s(v, "answer_id") === aid && s(v, "user_id") === profile?.id);
+                    return <div key={aid} className={`rounded-xl border p-3 ${String(a.is_accepted) === "true" ? "border-brand bg-brand-tint/40" : ""}`}>
+                      <p className="text-xs text-slate-500"><b className="text-slate-800">{s(a, "author_name")}</b> · <span className="capitalize">{s(a, "author_role")}</span> · {s(a, "created_at") ? new Date(s(a, "created_at")).toLocaleString() : ""}{String(a.is_accepted) === "true" && <span className="ml-2 rounded-full bg-brand px-2 py-0.5 text-[10px] font-extrabold text-white">✓ Accepted answer</span>}</p>
+                      <p className="mt-1 text-sm">{s(a, "body")}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button onClick={() => toggleVote(aid)} className={`rounded-full px-3 py-1 text-xs font-extrabold ${voted ? "bg-brand text-white" : "bg-slate-200"}`}>▲ {forumVotes(aid)} {voted ? "Upvoted" : "Upvote"}</button>
+                        {String(a.is_accepted) !== "true" && (s(q, "student_id") === effectiveId || profile?.role === "teacher" || profile?.role === "admin") && <button onClick={() => acceptAnswer(qid, aid)} className="rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold">Mark as accepted</button>}
+                        <button onClick={() => setReplyTo({ ...replyTo, [aid]: replyTo[aid] ? "" : "open" })} className="rounded-full border px-3 py-1 text-xs font-bold">Reply</button>
+                      </div>
+                      {replies.map(r => <div key={s(r, "id")} className="ml-4 mt-2 rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500"><b className="text-slate-800">{s(r, "author_name")}</b> · <span className="capitalize">{s(r, "author_role")}</span></p><p className="mt-1 text-sm">{s(r, "body")}</p></div>)}
+                      {replyTo[aid] === "open" && <div className="ml-4 mt-2"><textarea className="input" rows={2} placeholder="Reply to this answer…" value={ansText[`${qid}:${aid}`] || ""} onChange={e => setAnsText({ ...ansText, [`${qid}:${aid}`]: e.target.value })} /><button onClick={() => postForumAnswer(qid, aid)} className="btn-brand mt-2 !py-2 text-xs">Post reply</button></div>}
+                    </div>;
+                  })}
+                  <div><label className="label">Your answer</label><textarea className="input" rows={3} placeholder="Write a clear, helpful answer…" value={ansText[qid] || ""} onChange={e => setAnsText({ ...ansText, [qid]: e.target.value })} /><button onClick={() => postForumAnswer(qid)} className="btn-brand mt-2 !py-2 text-xs">Post answer</button></div>
+                </div>}
+              </div>;
+            });
+          })()}
         </div>
       </div>
     );
