@@ -40,6 +40,23 @@ export async function GET(request: NextRequest) {
     const { data: payment } = await supabase.from("payments").select("*").eq("order_id", orderId).single();
     if (!payment) return fail();
 
+    // Amount / currency / customer verification: the order Cashfree reports
+    // must match the pending payment row we created server-side (price and
+    // customer_id were set by create-order). A mismatch means this is not
+    // the order this student was charged for — never enrol on it. Fields
+    // Cashfree does not send are skipped rather than blocking a payment.
+    const cfAmount = Number(data.order_amount);
+    const cfCurrency = String(data.order_currency || "");
+    const cfCustomer = String(data.customer_details?.customer_id || "");
+    if (
+      (Number.isFinite(cfAmount) && cfAmount !== Number(payment.amount)) ||
+      (cfCurrency && cfCurrency !== String(payment.currency || "INR")) ||
+      (cfCustomer && cfCustomer !== String(payment.student_id))
+    ) {
+      console.error(`[cashfree return] order ${orderId} mismatch: cashfree amount=${data.order_amount} currency=${data.order_currency} customer=${cfCustomer} vs payment amount=${payment.amount} currency=${payment.currency} student=${payment.student_id}`);
+      return fail();
+    }
+
     // Idempotency (audit #4): Cashfree can redirect here more than once,
     // and the webhook may already have enrolled this order. A payment
     // that is already paid must never create a second enrolment,

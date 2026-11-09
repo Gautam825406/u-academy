@@ -109,6 +109,23 @@ export async function POST(request: NextRequest) {
   }
   const alreadyPaid = payment.status === "paid" || payment.status === "successful";
 
+  // Amount / customer verification (same rule as the return route): the
+  // signed webhook order must match the pending payment row we created
+  // server-side. Only enforce fields Cashfree actually sent — a missing
+  // field must never block a genuine payment. A mismatch is acknowledged
+  // (so Cashfree stops retrying) but never enrolled.
+  if (eventType === "PAYMENT_SUCCESS_WEBHOOK") {
+    const whAmount = Number(order.order_amount);
+    const whCustomer = String(((order.customer_details || {}) as Record<string, unknown>).customer_id || "");
+    if (
+      (Number.isFinite(whAmount) && whAmount !== 0 && whAmount !== Number(payment.amount)) ||
+      (whCustomer && whCustomer !== String(payment.student_id))
+    ) {
+      console.error(`[cashfree webhook] order ${orderId} amount/customer mismatch — not enrolling`);
+      return NextResponse.json({ ok: true });
+    }
+  }
+
   if (eventType === "PAYMENT_SUCCESS_WEBHOOK") {
     if (alreadyPaid) return NextResponse.json({ ok: true });
     const { error } = await supabase

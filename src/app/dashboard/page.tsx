@@ -119,6 +119,13 @@ export default function DashboardPage() {
   const [demoError, setDemoError] = useState("");
   const [editingBatch, setEditingBatch] = useState<Row | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  // All Batches vs My Batches (student split view) — the tabs live inside
+  // the "batches" section; the sidebar / bottom tab still open this section.
+  const [batchTab, setBatchTab] = useState<"all" | "mine">("mine");
+  const [batchSearch, setBatchSearch] = useState("");
+  const [batchClass, setBatchClass] = useState("");
+  const [expandedBatch, setExpandedBatch] = useState("");
+  const [learnBatch, setLearnBatch] = useState("");
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Session restoration: if the session arrives (or is refreshed) after
@@ -332,6 +339,38 @@ export default function DashboardPage() {
   const subFor = (studentId: string, batchId: string) => mySubs.find(x => s(x, "student_id") === studentId && s(x, "batch_id") === batchId) || (data.enrollments || []).find(e => s(e, "student_id") === studentId && s(e, "batch_id") === batchId);
   const planDiscount = (pl: Row) => { const mrp = n(pl, "mrp"); const pr = n(pl, "price"); return mrp > pr ? Math.round((mrp - pr) / mrp * 100) : 0; };
   const planValidity = (pl: Row) => { const d = n(pl, "duration_days"); return d >= 9999 ? "Full Course — lifetime access" : d >= 365 ? `Valid ${Math.round(d / 365)} year${d >= 730 ? "s" : ""}` : d >= 30 ? `Valid ${Math.round(d / 30)} month${d >= 60 ? "s" : ""}` : `Valid ${d} days`; };
+  // ---- All Batches vs My Batches (student) ----
+  // My Batches is derived ONLY from the enrollments table for the effective
+  // student — viewing a batch, starting a payment, failing or cancelling it
+  // never adds a row here; only a verified enrolment does (return/webhook
+  // routes after Cashfree confirms PAID, or Admin manual enrolment).
+  const myEnrols = (data.enrollments || []).filter(e => s(e, "student_id") === effectiveId);
+  const myBatchesList = myEnrols.map(e => batches.find(b => s(b, "id") === s(e, "batch_id"))).filter(Boolean) as Row[];
+  const classOptions = Array.from(new Set(batches.map(b => s(b, "class_label")).filter(Boolean))).sort();
+  // Catalogue: published batches only — never closed/archived. Upcoming
+  // batches stay visible (status shown, enrolment disabled) so students
+  // can see what is coming; closed ones are hidden from students.
+  const catalogBatches = batches.filter(b => (s(b, "status") || "active") !== "closed");
+  const filteredCatalog = catalogBatches.filter(b => {
+    if (batchClass && s(b, "class_label") !== batchClass) return false;
+    const q = batchSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [s(b, "name"), s(b, "subject"), s(b, "class_label"), s(b, "board")].join(" ").toLowerCase().includes(q);
+  });
+  // Learning progress, computed honestly from existing data only: tasks
+  // completed (assignment submitted / test result entered) vs tasks set for
+  // that batch. There is no lecture-watch table, so lectures are NOT counted
+  // and no fake percentage is ever shown. Returns null when the batch has
+  // no assignments/tests yet.
+  const batchProgress = (batchId: string) => {
+    const asg = (data.assignments || []).filter(a => s(a, "batch_id") === batchId);
+    const tst = (data.tests || []).filter(t => s(t, "batch_id") === batchId);
+    const total = asg.length + tst.length;
+    if (!total) return null;
+    const doneAsg = asg.filter(a => (data.submissions || []).some(x => s(x, "assignment_id") === s(a, "id") && s(x, "student_id") === effectiveId)).length;
+    const doneTst = tst.filter(x => (data.test_results || []).some(y => s(y, "test_id") === s(x, "id") && s(y, "student_id") === effectiveId)).length;
+    return { done: doneAsg + doneTst, total };
+  };
 
   function isEnabled(key: string) {
     if (!profile) return false;
@@ -921,8 +960,8 @@ export default function DashboardPage() {
                     <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{attPct !== null ? `${attPct}%` : "—"}</b><span className="block text-xs font-bold opacity-80">My Attendance</span></div>
                   </div>
                 </div>
-                <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="font-extrabold">Currently enrolled batches</h3><button onClick={() => openSection("batches")} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
-                  {myBatches.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet — explore batches, pick a plan and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{myBatches.map(b => { const sub = mySubs.find(x => s(x, "batch_id") === s(b, "id")); const st = sub ? subStatus(sub) : "active"; return <li key={s(b, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")}</span><span className="flex items-center gap-2 text-xs font-bold text-slate-500">{sub ? `${s(sub, "plan_name") || "Plan"} · Valid until ${s(sub, "valid_until") || "—"}` : "Enrolled"}{st === "expired" && <button onClick={() => openSection("batches")} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
+                <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="font-extrabold">Currently enrolled batches</h3><button onClick={() => { setBatchTab("all"); openSection("batches"); }} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
+                  {myBatches.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet — explore batches, pick a plan and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{myBatches.map(b => { const sub = mySubs.find(x => s(x, "batch_id") === s(b, "id")); const st = sub ? subStatus(sub) : "active"; return <li key={s(b, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")}</span><span className="flex items-center gap-2 text-xs font-bold text-slate-500">{sub ? `${s(sub, "plan_name") || "Plan"} · Valid until ${s(sub, "valid_until") || "—"}` : "Enrolled"}{st === "expired" && <button onClick={() => { setBatchTab("mine"); openSection("batches"); }} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
                 </div>
                 <div className="card mt-5"><h3 className="font-extrabold">Upcoming live classes</h3>
                   {upcomingLive.length === 0 ? <p className="mt-2 text-sm text-slate-500">No live classes scheduled ahead.</p> : <ul className="mt-2 space-y-1 text-sm">{upcomingLive.map(c => <li key={s(c, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(c, "title")}</b> · {s(c, "subject")}</span><span className="text-slate-500">{new Date(s(c, "starts_at")).toLocaleString()}</span></li>)}</ul>}
@@ -1144,9 +1183,21 @@ export default function DashboardPage() {
             {demoError && <p className="mt-1 text-xs font-bold text-red-700">{demoError}</p>}
           </div>
         </div><div className="mt-3 flex gap-2"><button className="btn-brand !py-2.5 text-sm">Save changes</button><button type="button" onClick={() => { setEditingBatch(null); setEditForm({}); setThumbError(""); }} className="rounded-xl border px-4 py-2.5 text-sm font-bold">Cancel</button></div></form>}
+        {!isStaff && <div className="card mt-3">
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Batches">
+            {(["all", "mine"] as const).map(tb => <button key={tb} role="tab" aria-selected={batchTab === tb} onClick={() => setBatchTab(tb)} className={`rounded-full px-4 py-2 text-sm font-extrabold ${batchTab === tb ? "bg-brand text-white" : "bg-slate-200"}`}>{tb === "all" ? `All Batches (${filteredCatalog.length})` : `My Batches (${myBatchesList.length})`}</button>)}
+          </div>
+          {batchTab === "all" && <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <input className="input" placeholder="Search batches by name, subject or class…" value={batchSearch} onChange={e => setBatchSearch(e.target.value)} />
+            <select className="input" value={batchClass} onChange={e => setBatchClass(e.target.value)}><option value="">All classes</option>{classOptions.map(c => <option key={c} value={c}>{c}</option>)}</select>
+          </div>}
+          <p className="mt-2 text-xs text-slate-500">{batchTab === "all" ? "Every batch open for enrolment. Buy a plan to start learning — a batch only moves to My Batches after Cashfree confirms your payment." : "Only batches you are enrolled in. Access stays active while your plan is valid; renew an expired plan from its card."}</p>
+        </div>}
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          {batches.length === 0 && empty("No batches yet — create your first batch above.")}
-          {batches.map(b => {
+          {isStaff && batches.length === 0 && empty("No batches yet — create your first batch above.")}
+          {!isStaff && batchTab === "mine" && myBatchesList.length === 0 && <div className="card text-sm text-slate-600 sm:col-span-2">You are not enrolled in any batch yet. <button onClick={() => setBatchTab("all")} className="font-bold text-brand-dark underline">Browse all batches →</button></div>}
+          {!isStaff && batchTab === "all" && filteredCatalog.length === 0 && <div className="card text-sm text-slate-600 sm:col-span-2">No batches match that search. Try a different name, subject or class.</div>}
+          {(isStaff ? batches : batchTab === "mine" ? myBatchesList : filteredCatalog).map(b => {
             const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === s(b, "id"));
             const thumb = s(b, "thumbnail_url");
             const initials = s(b, "name").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U+";
@@ -1154,9 +1205,16 @@ export default function DashboardPage() {
               {thumb ? <img src={thumb} alt={`${s(b, "name")} thumbnail`} className="aspect-video w-full object-cover" /> : <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-brand to-brand-dark"><span className="text-4xl font-extrabold tracking-wide text-white">{initials}</span></div>}
               <div className="p-4"><b className="text-base">{s(b, "name")}</b>
               <p className="mt-1 flex flex-wrap gap-1">{[s(b, "class_label"), s(b, "board"), s(b, "subject")].filter(Boolean).map(c => <span key={c} className="rounded-full bg-brand-tint px-2 py-0.5 text-[11px] font-extrabold text-brand-dark">{c}</span>)}<span className={`rounded-full px-2 py-0.5 text-[11px] font-extrabold ${(s(b, "status") || "active") === "active" ? "bg-brand-tint text-brand-dark" : "bg-slate-200 text-slate-600"}`}>{s(b, "status") || "active"}</span></p>
-              {s(b, "description") && <p className="mt-2 line-clamp-2 text-sm text-slate-600">{s(b, "description")}</p>}
+              {s(b, "description") && <p className={`mt-2 text-sm text-slate-600 ${expandedBatch === s(b, "id") ? "" : "line-clamp-2"}`}>{s(b, "description")}</p>}
               <p className="mt-2 text-xs text-slate-500">Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · <b className="text-sm text-ink">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</b></p>
               {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-extrabold text-amber-800">📄 Free Demo Lecture — View Demo PDF ↗</a>}
+              {!isStaff && <div className="mt-2"><button onClick={() => setExpandedBatch(expandedBatch === s(b, "id") ? "" : s(b, "id"))} className="text-xs font-bold text-brand-dark underline">{expandedBatch === s(b, "id") ? "Hide details ▲" : "View details ▾"}</button>
+                {expandedBatch === s(b, "id") && <div className="mt-2 space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                  <p><b>Teacher:</b> {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · <b>Class:</b> {s(b, "class_label")} · <b>Board:</b> {s(b, "board") || "—"} · <b>Subject:</b> {s(b, "subject") || "—"}</p>
+                  <p><b>Enrolled:</b> {enrolled.length}{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : " (unlimited seats)"} · <b>Price:</b> {n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"} · <b>Status:</b> {s(b, "status") || "active"}</p>
+                  {(() => { const pls = (data.batch_plans || []).filter(x => s(x, "batch_id") === s(b, "id") && String(x.is_active) !== "false"); if (!pls.length) return <p>No plans yet — the batch price above applies.</p>; return <div><b>Plans:</b><ul className="mt-1 space-y-1">{pls.map(pl => <li key={s(pl, "id")}>· {s(pl, "name")} — ₹{String(pl.price)}{n(pl, "mrp") > 0 ? <span className="text-slate-400 line-through"> ₹{String(pl.mrp)}</span> : ""} · {planValidity(pl)}{s(pl, "features") ? ` · ${s(pl, "features")}` : ""}</li>)}</ul></div>; })()}
+                </div>}
+              </div>}
               {!isStaff && (() => {
                 const bid = s(b, "id");
                 const mine = enrolled.some(e => s(e, "student_id") === effectiveId);
@@ -1166,6 +1224,31 @@ export default function DashboardPage() {
                 const mySub = mySubs.find(x => s(x, "batch_id") === bid && subStatus(x) === "active") || mySubs.find(x => s(x, "batch_id") === bid);
                 const selId = selPlan[bid] || (plans[0] ? s(plans[0], "id") : "");
                 const sel = plans.find(x => s(x, "id") === selId);
+                // My Batches tab: enrolled-only card. Enrolment date comes
+                // from the enrollments row; access from the subscription
+                // (a grandfathered enrolment without one is Active);
+                // "duration" is the bought plan's validity — batches have
+                // no duration/start-date column. Progress is tasks done
+                // vs tasks set (see batchProgress).
+                if (batchTab === "mine") {
+                  const enr = myEnrols.find(e => s(e, "batch_id") === bid);
+                  const prog = batchProgress(bid);
+                  const expired = !!(mySub && subStatus(mySub) === "expired");
+                  const boughtPlan = (data.batch_plans || []).find(x => s(x, "id") === s(mySub, "plan_id") || s(x, "id") === s(enr, "plan_id"));
+                  return <div className="mt-2 space-y-2">
+                    <p className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-600">
+                      <span className={`rounded-full px-2 py-1 ${expired ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}>{expired ? "Expired" : "✓ Active"}</span>
+                      <span>Enrolled {enr && s(enr, "created_at") ? new Date(s(enr, "created_at")).toLocaleDateString() : "—"}</span>
+                      {mySub && <span>{s(mySub, "plan_name") || "Plan"} · Valid until {s(mySub, "valid_until") || "—"}</span>}
+                      {boughtPlan && <span>· {planValidity(boughtPlan)}</span>}
+                    </p>
+                    {prog ? <div><p className="text-xs font-bold text-slate-600">Learning progress — {prog.done} of {prog.total} tasks done ({Math.round(prog.done / prog.total * 100)}%)</p><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.round(prog.done / prog.total * 100)}%` }} /></div><p className="mt-1 text-[11px] text-slate-500">Tasks = assignments submitted + tests attempted in this batch.</p></div> : <p className="text-xs text-slate-500">Progress tracking coming soon — complete assignments and tests in this batch and your progress will show here.</p>}
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => { setLearnBatch(bid); openSection("lectures"); }} disabled={!activeBatchIds.has(bid)} className="btn-brand !py-2 text-xs">Continue Learning →</button>
+                      {expired && <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="btn-brand !py-2 text-xs">{payBusy === bid ? "Starting payment…" : `Renew — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree`}</button>}
+                    </div>
+                  </div>;
+                }
                 // Root cause (audit #3): an enrolment with no subscription
                 // row (Admin/manual enrol, or a free enrol before plans
                 // existed) fell through to the "Pay again" button even
@@ -1207,9 +1290,10 @@ export default function DashboardPage() {
           <div><label className="label">Notes</label><input className="input" value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save lecture</button></form>}
         {!isStaff && activeBatchIds.size === 0 && <p className="card mt-3 text-sm text-slate-600">Enrol in a batch to access its lectures — pick a plan in Batches and pay via Cashfree.</p>}
+        {learnBatch && <p className="card mt-3 text-sm">Showing lectures for <b>{batchName(learnBatch)}</b> <button onClick={() => setLearnBatch("")} className="ml-1 font-bold text-brand-dark underline">Show all my lectures ✕</button></p>}
         <div className="mt-4 space-y-2">
-          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id"))).length === 0 && empty("No lectures yet.")}
-          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id"))).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="text-sm">{s(l, "title")}</b><p className="text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
+          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).length === 0 && empty("No lectures yet.")}
+          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="text-sm">{s(l, "title")}</b><p className="text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
             {id ? <div className="mt-2 aspect-video w-full max-w-xl overflow-hidden rounded-xl"><iframe className="h-full w-full" src={`https://www.youtube.com/embed/${id}`} title={s(l, "title")} allowFullScreen /></div> : s(l, "youtube_url") ? <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(l, "youtube_url")} target="_blank" rel="noreferrer">▶ Watch on YouTube</a> : null}
             {s(l, "notes") && <p className="mt-2 text-sm text-slate-600">{s(l, "notes")}</p>}</div>; })}
         </div>
