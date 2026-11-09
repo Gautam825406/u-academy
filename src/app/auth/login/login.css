@@ -1,0 +1,57 @@
+/* U++ Academy — login page only. Scoped to the login route via
+   page.tsx import; nothing here touches globals.css or other pages. */
+
+@keyframes login-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes login-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes login-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+@keyframes login-gradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.login-entrance { animation: login-fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.login-entrance-delay { animation: login-fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.12s both; }
+.login-fade { animation: login-fade-in 0.7s ease both; }
+.login-msg { animation: login-fade-up 0.3s ease both; }
+
+.login-brand-panel {
+  background: linear-gradient(135deg, #635bff 0%, #8b5cf6 48%, #14b8a6 110%);
+  background-size: 220% 220%;
+  animation: login-gradient 16s ease-in-out infinite;
+}
+
+.login-chip { animation: login-float 5s ease-in-out infinite; }
+.login-chip-2 { animation: login-float 6s ease-in-out 0.8s infinite; }
+.login-chip-3 { animation: login-float 5.5s ease-in-out 1.6s infinite; }
+.login-chip-4 { animation: login-float 6.5s ease-in-out 0.4s infinite; }
+
+/* Inputs: smooth focus ring in the spec primary. */
+.login-input { transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease; }
+.login-input:focus {
+  border-color: #635bff;
+  box-shadow: 0 0 0 4px rgba(99, 91, 255, 0.14);
+  outline: none;
+}
+
+/* Button: hover lift, press shrink, disabled state. */
+.login-btn { transition: background-color 0.18s ease, transform 0.12s ease, box-shadow 0.18s ease; }
+.login-btn:hover:not(:disabled) { background-color: #5248e6; box-shadow: 0 10px 24px -8px rgba(99, 91, 255, 0.55); }
+.login-btn:active:not(:disabled) { transform: scale(0.985); }
+.login-btn:disabled { opacity: 0.75; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-entrance, .login-entrance-delay, .login-fade, .login-msg,
+  .login-chip, .login-chip-2, .login-chip-3, .login-chip-4,
+  .login-brand-panel { animation: none; }
+  .login-input, .login-btn { transition: none; }
+}
