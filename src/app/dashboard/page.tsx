@@ -509,13 +509,19 @@ export default function DashboardPage() {
         return;
       }
       if (data.free) { setMsg(`Enrolled in ${data.title || "the batch"} — it is free.`); loadAll(); return; }
-      // Cashfree hosted checkout: prefer the payment_link the order API
-      // returns; otherwise use the hosted form with the payment session id.
+      // Cashfree hosted checkout: use the server-provided checkout_url —
+      // it points at the forms host matching the environment the order was
+      // created in (Production vs Sandbox). A Sandbox session opened on the
+      // Production forms page shows "Invalid form code: null", so never
+      // hard-code the Production host here and never redirect with a
+      // null/empty session id.
+      const checkoutUrl = data.checkout_url as string | undefined;
       const link = data.payment_link as string | undefined;
       const sessionId = data.payment_session_id as string | undefined;
-      if (link) window.location.href = link;
-      else if (sessionId) window.location.href = `https://payments.cashfree.com/forms?paymentSessionId=${encodeURIComponent(sessionId)}`;
-      else setMsg("Cashfree did not return a checkout link. Please try again or pay at the institute.");
+      if (checkoutUrl && typeof checkoutUrl === "string" && checkoutUrl.startsWith("https://")) window.location.href = checkoutUrl;
+      else if (link) window.location.href = link;
+      else if (sessionId && sessionId !== "null" && sessionId !== "undefined") window.location.href = `https://payments.cashfree.com/forms?paymentSessionId=${encodeURIComponent(sessionId)}`;
+      else setMsg("Cashfree did not return a checkout session. Please try again or pay at the institute.");
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : "Could not start the payment.");
     } finally { setPayBusy(""); }

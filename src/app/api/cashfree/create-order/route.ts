@@ -161,10 +161,21 @@ export async function POST(request: NextRequest) {
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+    // The checkout session MUST exist and the checkout host MUST match the
+    // environment the order was created in: a Sandbox session id opened on
+    // the Production forms page (or vice versa) shows Cashfree's
+    // "Invalid form code: null". Never redirect with a null/empty session.
+    const sessionId = typeof data.payment_session_id === "string" ? data.payment_session_id.trim() : "";
+    if (!sessionId) {
+      console.error(`[cashfree create-order] Cashfree ${base}/orders returned no payment_session_id for order ${orderId}; response keys: ${Object.keys(data || {}).join(",")}`);
+      return NextResponse.json({ error: "Cashfree created the order but did not return a checkout session. Please try again — if it keeps happening, ask Admin to check the Cashfree app mode (Production/Test) in the Cashfree dashboard." }, { status: 502 });
+    }
+    const checkoutHost = isProd ? "https://payments.cashfree.com" : "https://sandbox.cashfree.com";
     return NextResponse.json({
       order_id: orderId,
-      payment_session_id: data.payment_session_id || null,
+      payment_session_id: sessionId,
       payment_link: data.payment_link || null,
+      checkout_url: `${checkoutHost}/forms?paymentSessionId=${encodeURIComponent(sessionId)}`,
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not start the payment." }, { status: 500 });
