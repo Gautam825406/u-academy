@@ -5,6 +5,13 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FEATURES, FEATURE_KEYS, type Profile } from "@/lib/types";
 import InstallAppButton from "@/components/InstallAppButton";
+import "./app-shell.css";
+import {
+  BarChart3, Bell, BookOpen, CalendarCheck, ClipboardList, FileText,
+  FolderOpen, Home, LayoutGrid, Megaphone, Menu, MessageCircleQuestion,
+  MoreHorizontal, Play, ShieldCheck, TrendingUp, User, Users, Video, Wallet, X,
+  type LucideIcon,
+} from "lucide-react";
 
 type Row = Record<string, unknown>;
 const s = (r: Row | null | undefined, k: string) => String((r as Row)?.[k] ?? "");
@@ -41,6 +48,15 @@ function ytId(url: string) {
   const m = url.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{6,})/);
   return m ? m[1] : "";
 }
+// Lucide icons for every dashboard section (sidebar, bottom nav, More
+// sheet). Visual only — destinations and role gating are unchanged.
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  overview: Home, batches: BookOpen, live_classes: Video, lectures: Play,
+  assignments: FileText, tests: ClipboardList, materials: FolderOpen,
+  attendance: CalendarCheck, fees: Wallet, doubts: MessageCircleQuestion,
+  notifications: Bell, reports: BarChart3, users: Users,
+  permissions: ShieldCheck, profile: User,
+};
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -208,6 +224,7 @@ export default function DashboardPage() {
   async function loadAll() {
     if (!profile) return;
     setDataLoading(true);
+    try {
     const role = profile.role;
     const out: Record<string, Row[]> = {};
     const fetchAll = async (t: string) => {
@@ -298,7 +315,7 @@ export default function DashboardPage() {
     setData(out);
     setCounts({ batches: out.batches.length, lectures: out.lectures.length, assignments: out.assignments.length, tests: out.tests.length, fees: out.fees.length, doubts: (out.doubt_questions || []).filter(r => s(r, "status") === "open").length });
     setPerms(out.role_permissions);
-    setDataLoading(false);
+    } finally { setDataLoading(false); }
   }
 
   const profiles = data.profiles || [];
@@ -865,12 +882,12 @@ export default function DashboardPage() {
         <div key={group.title}>
           <p className="mt-3 px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{group.title}</p>
           {keys.map((key) => {
-            const i = FEATURE_KEYS.indexOf(key as never);
             const enabled = isEnabled(key);
             const adminOnly = isAdminOnly(key) && profile.role !== "admin";
+            const Ico = SECTION_ICONS[key] || LayoutGrid;
             return (
-              <button key={key} onClick={() => openSection(key)} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-bold ${section===key ? "bg-brand-tint text-brand-dark" : "text-slate-600 hover:bg-slate-100"}`}>
-                <span className="w-5 text-center">{["🏠","📚","▶","📄","✏","📝","📹","✓","₹","💬","🔔","📊","👥","🔐","👤"][i]}</span>
+              <button key={key} onClick={() => openSection(key)} aria-current={section === key ? "page" : undefined} className={`app-press flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-bold ${section===key ? "bg-brand-tint text-brand-dark" : "text-slate-600 hover:bg-slate-100"}`}>
+                <Ico className="h-4 w-4 shrink-0" />
                 <span className="flex-1">{sectionLabel(key)}</span>
                 {adminOnly && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-500">Admin</span>}
                 {!enabled && !adminOnly && <span className="rounded-full bg-accent-tint px-2 py-0.5 text-[10px] font-extrabold text-accent-ink">Off</span>}
@@ -894,15 +911,23 @@ export default function DashboardPage() {
     <div><label className="label">{label}</label><select className="input" value={value} onChange={e => onChange(e.target.value)}><option value="">{allLabel}</option>{opts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select></div>
   );
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-40 flex items-center gap-3 border-b bg-white px-4 py-3">
-        <button className="rounded-xl border px-3 py-2 font-bold md:hidden" onClick={() => setDrawer(true)} aria-label="Open menu">☰ Menu</button>
-        <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-9 w-9 rounded-xl object-cover" /><span className="hidden sm:inline">U++ Academy</span></Link>
-        <span className="ml-auto rounded-full bg-brand-tint px-3 py-1 text-xs font-extrabold capitalize text-brand-dark">{profile.role}</span>
-        <button onClick={logout} className="hidden rounded-xl border px-3 py-2 text-sm font-bold md:block">Log out</button>
+    <div className="app-shell min-h-screen">
+      {/* Compact app header: logo + current section on mobile, full
+          brand + role + logout on desktop. Bell opens Announcements,
+          the avatar opens Profile — both existing sections. */}
+      <header className="sticky top-0 z-40 border-b bg-white/95 backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-3 sm:px-4">
+          <button className="app-press flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border md:hidden" onClick={() => setDrawer(true)} aria-label="Open menu"><Menu className="h-5 w-5" /></button>
+          <Link href="/" className="flex shrink-0 items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-8 w-8 rounded-lg object-cover" /><span className="hidden sm:inline">U++ Academy</span></Link>
+          <span className="min-w-0 flex-1 truncate text-center text-sm font-extrabold md:hidden">{sectionLabel(section)}</span>
+          <span className="ml-auto hidden rounded-full bg-brand-tint px-3 py-1 text-xs font-extrabold capitalize text-brand-dark md:inline-block">{profile.role}</span>
+          <button onClick={() => openSection("notifications")} className="app-press relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border md:hidden" aria-label="Announcements"><Bell className="h-5 w-5" />{(data.announcements || []).length > 0 && <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" aria-hidden="true" />}</button>
+          <button onClick={() => openSection("profile")} className="app-press flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-extrabold text-white md:hidden" aria-label="My profile">{(profile.full_name || "U")[0].toUpperCase()}</button>
+          <button onClick={logout} className="hidden rounded-xl border px-3 py-2 text-sm font-bold md:block">Log out</button>
+        </div>
       </header>
-      <div className="mx-auto flex max-w-7xl gap-5 px-4 py-5 pb-24 md:pb-5">
-        <aside className="sticky top-[76px] hidden h-[calc(100vh-96px)] w-64 shrink-0 overflow-hidden rounded-2xl border bg-white shadow-sm md:block">{sidebar}</aside>
+      <div className="mx-auto flex max-w-7xl gap-5 px-4 py-5 pb-28 md:pb-5">
+        <aside className="sticky top-[72px] hidden h-[calc(100vh-92px)] w-64 shrink-0 overflow-hidden rounded-2xl border bg-white shadow-sm md:block">{sidebar}</aside>
         <main className="min-w-0 flex-1">
           {msg && <p className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{msg}</p>}
           {childProfile && <p className="mb-3 rounded-xl bg-brand-tint p-3 text-sm font-bold text-brand-dark">Parent view — showing your child {effectiveName}&rsquo;s fees, attendance, tests and assignments below.</p>}
@@ -951,7 +976,7 @@ export default function DashboardPage() {
               <div>
                 <div className="rounded-3xl bg-gradient-to-r from-brand to-brand-dark p-6 text-white">
                   <p className="text-xs font-extrabold uppercase tracking-widest text-amber-300">Welcome back · U++ Academy</p>
-                  <h1 className="mt-1 text-2xl font-extrabold">Namaste, {effectiveName.split(" ")[0] || profile.full_name.split(" ")[0]} 👋</h1>
+                  <h1 className="mt-1 text-2xl font-extrabold">Namaste, {effectiveName.split(" ")[0] || profile.full_name.split(" ")[0]}</h1>
                   <p className="mt-1 text-sm opacity-90">{myBatches.length ? `You are enrolled in ${myBatches.length} batch${myBatches.length > 1 ? "es" : ""}.` : "You are not enrolled in any batch yet — explore batches below to start learning."}{attPct !== null ? ` Your attendance so far: ${attPct}%.` : ""}</p>
                   <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{myBatches.length}</b><span className="block text-xs font-bold opacity-80">My Batches</span></div>
@@ -960,34 +985,50 @@ export default function DashboardPage() {
                     <div className="rounded-2xl bg-white/15 p-3"><b className="text-2xl">{attPct !== null ? `${attPct}%` : "—"}</b><span className="block text-xs font-bold opacity-80">My Attendance</span></div>
                   </div>
                 </div>
-                <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="font-extrabold">Currently enrolled batches</h3><button onClick={() => { setBatchTab("all"); openSection("batches"); }} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
+                {myBatches.length > 0 && (() => { const first = myBatches[0]; const prog = batchProgress(s(first, "id")); const pct = prog ? Math.round(prog.done / prog.total * 100) : null; const active = activeBatchIds.has(s(first, "id")); return (
+                <div className="card mt-5 !border-brand/20 !bg-gradient-to-br !from-brand-tint/60 !to-white">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-brand text-lg font-extrabold text-white">{s(first, "name").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U+"}</span>
+                    <div className="min-w-0 flex-1"><p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">Continue learning</p><p className="truncate font-extrabold">{s(first, "name")}</p><p className="truncate text-xs text-slate-500">{s(first, "class_label")} · {s(first, "subject")}{pct !== null ? ` · ${pct}% complete` : ""}</p></div>
+                  </div>
+                  {pct !== null && <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${pct}%` }} /></div>}
+                  <button onClick={() => { setLearnBatch(s(first, "id")); openSection("lectures"); }} disabled={!active} className="btn-brand mt-3 w-full !py-2.5 text-sm">{active ? "Continue Learning →" : "Plan expired — renew in My Batches"}</button>
+                </div>); })()}
+                <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="flex items-center gap-2 font-extrabold"><BookOpen className="h-4 w-4 text-brand" />Currently enrolled batches</h3><button onClick={() => { setBatchTab("all"); openSection("batches"); }} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
                   {myBatches.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet — explore batches, pick a plan and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{myBatches.map(b => { const sub = mySubs.find(x => s(x, "batch_id") === s(b, "id")); const st = sub ? subStatus(sub) : "active"; return <li key={s(b, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")}</span><span className="flex items-center gap-2 text-xs font-bold text-slate-500">{sub ? `${s(sub, "plan_name") || "Plan"} · Valid until ${s(sub, "valid_until") || "—"}` : "Enrolled"}{st === "expired" && <button onClick={() => { setBatchTab("mine"); openSection("batches"); }} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Upcoming live classes</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><Video className="h-4 w-4 text-brand" />Upcoming live classes</h3>
                   {upcomingLive.length === 0 ? <p className="mt-2 text-sm text-slate-500">No live classes scheduled ahead.</p> : <ul className="mt-2 space-y-1 text-sm">{upcomingLive.map(c => <li key={s(c, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(c, "title")}</b> · {s(c, "subject")}</span><span className="text-slate-500">{new Date(s(c, "starts_at")).toLocaleString()}</span></li>)}</ul>}
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Recently uploaded lectures</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><Play className="h-4 w-4 text-brand" />Recently uploaded lectures</h3>
                   {recentLectures.length === 0 ? <p className="mt-2 text-sm text-slate-500">No lectures in your batches yet.</p> : <ul className="mt-2 space-y-1 text-sm">{recentLectures.map(l => <li key={s(l, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(l, "title")}</b> · {batchName(s(l, "batch_id"))} · {s(l, "subject")}</li>)}</ul>}
                   <button onClick={() => openSection("lectures")} className="mt-2 text-xs font-bold text-brand-dark">All recorded lectures →</button>
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Pending assignments</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><FileText className="h-4 w-4 text-brand" />Pending assignments</h3>
                   {pendingAsg.length === 0 ? <p className="mt-2 text-sm text-slate-500">Nothing pending — you are all caught up.</p> : <ul className="mt-2 space-y-1 text-sm">{pendingAsg.map(a => <li key={s(a, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(a, "title")}</b> · {s(a, "subject")}</span><span className="text-slate-500">Due {s(a, "due_date") || "—"}</span></li>)}</ul>}
                   <button onClick={() => openSection("assignments")} className="mt-2 text-xs font-bold text-brand-dark">Go to Assignments →</button>
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Recently answered doubts</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><TrendingUp className="h-4 w-4 text-brand" />Test performance</h3>
+                  {(() => { const mine = (data.test_results || []).filter(r => s(r, "student_id") === effectiveId); if (!mine.length) return <p className="mt-2 text-sm text-slate-500">No test results yet — results appear here once a teacher enters your marks.</p>; const pcts = mine.map(r => { const t = (data.tests || []).find(x => s(x, "id") === s(r, "test_id")); const tot = n(t, "total_marks"); return tot > 0 ? n(r, "marks") / tot * 100 : null; }).filter((x): x is number => x !== null); const avg = pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null; const best = mine.map(r => { const t = (data.tests || []).find(x => s(x, "id") === s(r, "test_id")); return { title: s(t, "title") || "Test", pct: n(t, "total_marks") > 0 ? Math.round(n(r, "marks") / n(t, "total_marks") * 100) : null }; }).filter(x => x.pct !== null).sort((a, b) => (b.pct || 0) - (a.pct || 0))[0]; return <p className="mt-2 text-sm"><b>{mine.length}</b> test{mine.length > 1 ? "s" : ""} attempted{avg !== null ? <> · Average <b>{avg}%</b></> : ""}{best ? <> · Best: <b>{best.title} ({best.pct}%)</b></> : ""}</p>; })()}
+                </div>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><MessageCircleQuestion className="h-4 w-4 text-brand" />Recently answered doubts</h3>
                   {answeredMine.length === 0 ? <p className="mt-2 text-sm text-slate-500">{myQs.length === 0 ? "You have not asked any doubt yet." : "Your doubts are still waiting for an answer."}</p> : <ul className="mt-2 space-y-1 text-sm">{answeredMine.slice(0, 3).map(q => <li key={s(q, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(q, "title")}</b> · {forumAnswers(s(q, "id")).length} answer(s) · {s(q, "status")}</li>)}</ul>}
                   <button onClick={() => openSection("doubts")} className="mt-2 text-xs font-bold text-brand-dark">Open Doubt Forum →</button>
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Recent announcements</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><Megaphone className="h-4 w-4 text-brand" />Recent announcements</h3>
                   {recentAnn.length === 0 ? <p className="mt-2 text-sm text-slate-500">No announcements yet.</p> : <ul className="mt-2 space-y-1 text-sm">{recentAnn.map(a => <li key={s(a, "id")} className="rounded-lg bg-slate-50 px-3 py-2"><b>{s(a, "title")}</b> — {s(a, "body")}</li>)}</ul>}
                 </div>
-                <div className="card mt-5"><h3 className="font-extrabold">Payment status</h3>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><FolderOpen className="h-4 w-4 text-brand" />Recently added study materials</h3>
+                  {(data.materials || []).length === 0 ? <p className="mt-2 text-sm text-slate-500">No study materials in your batches yet.</p> : <ul className="mt-2 space-y-1 text-sm">{(data.materials || []).slice(0, 3).map(m => <li key={s(m, "id")} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2"><FileText className="h-4 w-4 shrink-0 text-brand" /><span className="min-w-0 flex-1 truncate"><b>{s(m, "title")}</b> · {batchName(s(m, "batch_id"))} · {s(m, "kind")}</span></li>)}</ul>}
+                  <button onClick={() => openSection("materials")} className="mt-2 text-xs font-bold text-brand-dark">All study materials →</button>
+                </div>
+                <div className="card mt-5"><h3 className="flex items-center gap-2 font-extrabold"><Wallet className="h-4 w-4 text-brand" />Payment status</h3>
                   {myPays.length === 0 ? <p className="mt-2 text-sm text-slate-500">No payments yet. Buy a batch plan to see it here.</p> : <p className="mt-2 text-sm">Latest payment: <b>₹{String(lastPay.amount)}</b> for {batchName(s(lastPay, "batch_id"))} — <b className="capitalize">{s(lastPay, "status")}</b> · Order {s(lastPay, "order_id")}</p>}
                   <button onClick={() => openSection("fees")} className="mt-2 text-xs font-bold text-brand-dark">My Payments →</button>
                 </div>
                 <h2 className="mb-3 mt-6 font-extrabold">Jump to</h2>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {["lectures","assignments","live_classes","doubts"].map(k => <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{sectionLabel(k)}</button>)}
+                <div className="app-scroll-x md:grid md:grid-cols-4 md:gap-3 md:overflow-visible">
+                  {["lectures","assignments","live_classes","doubts"].map(k => { const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={() => openSection(k)} className="app-press card flex w-40 items-center gap-2 !p-4 text-left font-bold hover:border-brand md:w-auto"><Ico className="h-5 w-5 shrink-0 text-brand" />{sectionLabel(k)}</button>; })}
                 </div>
                 <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here. Fees are paid online via Cashfree; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p><InstallAppButton className="mt-3" /></div>
               </div>
@@ -1067,12 +1108,12 @@ export default function DashboardPage() {
           )}
         </main>
       </div>
-      {drawer && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setDrawer(false)} /><aside className="absolute left-0 top-0 h-full w-80 max-w-[85vw] bg-white shadow-xl">{sidebar}</aside></div>}
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] pt-2 backdrop-blur md:hidden">
-        {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","lectures","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="doubts" ? "Doubt" : "Tasks"; return <button key={k} onClick={()=>openSection(k)} className={`flex flex-col items-center gap-0.5 py-1 text-[11px] font-bold ${section===k ? "text-brand" : "text-slate-400"}`}>{k==="overview"?"🏠":k==="batches"?"📚":k==="lectures"?"▶":k==="doubts"?"💬":"✏"}{label}</button>; })}
-        <button onClick={()=>setMoreOpen(true)} className={`flex flex-col items-center gap-0.5 py-1 text-[11px] font-bold ${moreOpen ? "text-brand" : "text-slate-400"}`}>⋯ More</button>
+      {drawer && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setDrawer(false)} /><aside className="absolute left-0 top-0 h-full w-80 max-w-[85vw] bg-white shadow-xl">{sidebar}</aside><button onClick={()=>setDrawer(false)} className="app-press absolute top-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-lg" style={{ left: "min(21rem, calc(85vw + 0.75rem))" }} aria-label="Close menu"><X className="h-5 w-5" /></button></div>}
+      <nav className="app-tabbar fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-white/95 px-2 pt-1.5 backdrop-blur md:hidden" aria-label="Primary">
+        {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","lectures","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="doubts" ? "Doubt" : "Tasks"; const active = section===k; const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} aria-current={active ? "page" : undefined} className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${active ? "bg-brand text-white" : "text-slate-400"}`}><Ico className="h-5 w-5" /></span><span className={`max-w-full truncate ${active ? "text-brand-dark" : "text-slate-400"}`}>{label}</span></button>; })}
+        <button onClick={()=>setMoreOpen(true)} aria-expanded={moreOpen} aria-label="More sections" className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${moreOpen ? "bg-brand text-white" : "text-slate-400"}`}><MoreHorizontal className="h-5 w-5" /></span><span className={moreOpen ? "text-brand-dark" : "text-slate-400"}>More</span></button>
       </nav>
-      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4 pb-8"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="rounded-lg border px-3 py-1 font-bold">Close</button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>(<button key={k} onClick={()=>openSection(k)} className="rounded-2xl border p-3 text-center text-xs font-bold">{sectionLabel(k)}{!isEnabled(k) && <span className="mt-1 block text-[10px] text-accent-ink">Off</span>}</button>))}</div><button onClick={logout} className="mt-4 w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
+      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="app-sheet absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="app-press flex h-10 w-10 items-center justify-center rounded-xl border" aria-label="Close menu"><X className="h-5 w-5" /></button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>{ const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} className="app-press flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-2xl border p-3 text-center text-xs font-bold"><Ico className="h-5 w-5 text-brand" />{sectionLabel(k)}{!isEnabled(k) && <span className="text-[10px] text-accent-ink">Off</span>}</button>; })}</div><button onClick={logout} className="app-press mt-4 min-h-[48px] w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
     </div>
   );
 
@@ -1184,8 +1225,8 @@ export default function DashboardPage() {
           </div>
         </div><div className="mt-3 flex gap-2"><button className="btn-brand !py-2.5 text-sm">Save changes</button><button type="button" onClick={() => { setEditingBatch(null); setEditForm({}); setThumbError(""); }} className="rounded-xl border px-4 py-2.5 text-sm font-bold">Cancel</button></div></form>}
         {!isStaff && <div className="card mt-3">
-          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Batches">
-            {(["all", "mine"] as const).map(tb => <button key={tb} role="tab" aria-selected={batchTab === tb} onClick={() => setBatchTab(tb)} className={`rounded-full px-4 py-2 text-sm font-extrabold ${batchTab === tb ? "bg-brand text-white" : "bg-slate-200"}`}>{tb === "all" ? `All Batches (${filteredCatalog.length})` : `My Batches (${myBatchesList.length})`}</button>)}
+          <div className="flex rounded-full bg-slate-100 p-1" role="tablist" aria-label="Batches">
+            {(["all", "mine"] as const).map(tb => <button key={tb} role="tab" aria-selected={batchTab === tb} onClick={() => setBatchTab(tb)} className={`app-press min-h-[44px] flex-1 rounded-full px-4 py-2 text-sm font-extrabold ${batchTab === tb ? "bg-brand text-white shadow" : "text-slate-600"}`}>{tb === "all" ? `All Batches (${filteredCatalog.length})` : `My Batches (${myBatchesList.length})`}</button>)}
           </div>
           {batchTab === "all" && <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <input className="input" placeholder="Search batches by name, subject or class…" value={batchSearch} onChange={e => setBatchSearch(e.target.value)} />
@@ -1201,13 +1242,13 @@ export default function DashboardPage() {
             const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === s(b, "id"));
             const thumb = s(b, "thumbnail_url");
             const initials = s(b, "name").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U+";
-            return <div key={s(b, "id")} className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+            return <div key={s(b, "id")} className="app-press overflow-hidden rounded-3xl border bg-white shadow-sm">
               {thumb ? <img src={thumb} alt={`${s(b, "name")} thumbnail`} className="aspect-video w-full object-cover" /> : <div className="flex aspect-video w-full items-center justify-center bg-gradient-to-br from-brand to-brand-dark"><span className="text-4xl font-extrabold tracking-wide text-white">{initials}</span></div>}
               <div className="p-4"><b className="text-base">{s(b, "name")}</b>
               <p className="mt-1 flex flex-wrap gap-1">{[s(b, "class_label"), s(b, "board"), s(b, "subject")].filter(Boolean).map(c => <span key={c} className="rounded-full bg-brand-tint px-2 py-0.5 text-[11px] font-extrabold text-brand-dark">{c}</span>)}<span className={`rounded-full px-2 py-0.5 text-[11px] font-extrabold ${(s(b, "status") || "active") === "active" ? "bg-brand-tint text-brand-dark" : "bg-slate-200 text-slate-600"}`}>{s(b, "status") || "active"}</span></p>
               {s(b, "description") && <p className={`mt-2 text-sm text-slate-600 ${expandedBatch === s(b, "id") ? "" : "line-clamp-2"}`}>{s(b, "description")}</p>}
               <p className="mt-2 text-xs text-slate-500">Teacher: {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · {enrolled.length} enrolled{s(b, "capacity") ? ` / ${s(b, "capacity")} seats` : ""} · <b className="text-sm text-ink">{n(b, "price") > 0 ? `₹${String(b.price)}` : "Free"}</b></p>
-              {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-extrabold text-amber-800">📄 Free Demo Lecture — View Demo PDF ↗</a>}
+              {s(b, "demo_pdf_url") && <a href={s(b, "demo_pdf_url")} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1.5 text-xs font-extrabold text-amber-800"><FileText className="h-3.5 w-3.5" />Free Demo Lecture — View Demo PDF ↗</a>}
               {!isStaff && <div className="mt-2"><button onClick={() => setExpandedBatch(expandedBatch === s(b, "id") ? "" : s(b, "id"))} className="text-xs font-bold text-brand-dark underline">{expandedBatch === s(b, "id") ? "Hide details ▲" : "View details ▾"}</button>
                 {expandedBatch === s(b, "id") && <div className="mt-2 space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
                   <p><b>Teacher:</b> {s(b, "teacher_id") ? nameOf(s(b, "teacher_id")) : "—"} · <b>Class:</b> {s(b, "class_label")} · <b>Board:</b> {s(b, "board") || "—"} · <b>Subject:</b> {s(b, "subject") || "—"}</p>
@@ -1293,8 +1334,8 @@ export default function DashboardPage() {
         {learnBatch && <p className="card mt-3 text-sm">Showing lectures for <b>{batchName(learnBatch)}</b> <button onClick={() => setLearnBatch("")} className="ml-1 font-bold text-brand-dark underline">Show all my lectures ✕</button></p>}
         <div className="mt-4 space-y-2">
           {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).length === 0 && empty("No lectures yet.")}
-          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="text-sm">{s(l, "title")}</b><p className="text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
-            {id ? <div className="mt-2 aspect-video w-full max-w-xl overflow-hidden rounded-xl"><iframe className="h-full w-full" src={`https://www.youtube.com/embed/${id}`} title={s(l, "title")} allowFullScreen /></div> : s(l, "youtube_url") ? <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(l, "youtube_url")} target="_blank" rel="noreferrer">▶ Watch on YouTube</a> : null}
+          {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="flex items-center gap-2 text-sm"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-tint text-brand-dark"><Play className="h-4 w-4" /></span>{s(l, "title")}</b><p className="mt-1 text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
+            {id ? <div className="app-video mt-2 aspect-video w-full max-w-xl"><iframe className="h-full w-full" src={`https://www.youtube.com/embed/${id}`} title={s(l, "title")} allowFullScreen /></div> : s(l, "youtube_url") ? <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(l, "youtube_url")} target="_blank" rel="noreferrer">Watch on YouTube</a> : null}
             {s(l, "notes") && <p className="mt-2 text-sm text-slate-600">{s(l, "notes")}</p>}</div>; })}
         </div>
       </div>
@@ -1494,7 +1535,7 @@ export default function DashboardPage() {
                   <span className={`rounded-full px-2 py-1 text-xs font-extrabold ${s(q, "status") === "resolved" ? "bg-brand-tint text-brand-dark" : s(q, "status") === "answered" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>{s(q, "status") === "resolved" ? "✓ Resolved" : s(q, "status") === "answered" ? "Answered" : "Open"}</span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-xs font-bold text-slate-500">
-                  <span>💬 {answers.length} answer{answers.length === 1 ? "" : "s"}</span>
+                  <span className="flex items-center gap-1"><MessageCircleQuestion className="h-4 w-4" />{answers.length} answer{answers.length === 1 ? "" : "s"}</span>
                   <span>▲ {upvotes} upvote{upvotes === 1 ? "" : "s"}</span>
                   {accepted && <span className="text-brand-dark">✓ Accepted answer: {s(accepted, "author_name")}</span>}
                   <button onClick={() => setOpenQ(open ? "" : qid)} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-700">{open ? "Hide discussion" : "View / answer"}</button>

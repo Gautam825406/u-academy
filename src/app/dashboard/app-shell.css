@@ -1,0 +1,77 @@
+/* U++ Academy — app shell styles (dashboard only).
+   Visual layer for the native-app feel: safe-area aware bottom nav,
+   horizontal scroll rows, press feedback, no horizontal overflow.
+   No behaviour, no layout logic — just presentation. */
+
+.app-shell {
+  overflow-x: clip;
+  background: #f4f7f8;
+}
+
+/* Horizontally scrollable chip/row (quick actions, category tabs).
+   Hidden scrollbar, snap, touch-friendly. */
+.app-scroll-x {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  margin-left: -1rem;
+  margin-right: -1rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+.app-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+.app-scroll-x > * {
+  scroll-snap-align: start;
+  flex-shrink: 0;
+}
+
+/* Fixed bottom tab bar: base padding + iOS/Android safe area. */
+.app-tabbar {
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* Bottom sheet safe area so the Log out button never sits under the
+   home indicator. */
+.app-sheet {
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* Native-feeling press feedback on tappable elements. */
+.app-press {
+  transition:
+    transform 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-press:active {
+  transform: scale(0.97);
+}
+
+/* Video embeds sit in a soft rounded frame, never edge-to-edge. */
+.app-video {
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-press,
+  .app-scroll-x {
+    transition: none;
+    scroll-behavior: auto;
+  }
+  .app-shell *,
+  .app-shell *::before,
+  .app-shell *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

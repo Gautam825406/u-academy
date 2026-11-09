@@ -76,7 +76,7 @@ export default function Landing() {
   }
 
   return (
-    <div>
+    <div className="overflow-x-clip">
       <header className="sticky top-0 z-50 border-b bg-[#f4f7f8]/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
           <Link href="/" className="flex items-center gap-2 font-extrabold text-lg"><img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" /><span>U++ Academy<small className="block text-[10px] font-semibold uppercase tracking-widest text-slate-500">Coaching · Classes 6–12</small></span></Link>
@@ -106,7 +106,7 @@ export default function Landing() {
 
           {/* Phone mockup */}
           <div id="app" className="flex justify-center">
-            <div className="w-[340px] rounded-[48px] bg-slate-900 p-3 shadow-2xl">
+            <div className="w-full max-w-[340px] rounded-[48px] bg-slate-900 p-3 shadow-2xl">
               <div className="flex h-[620px] flex-col overflow-hidden rounded-[38px] bg-[#f7faf9]">
                 <div className="flex justify-between px-5 pt-3 text-xs font-bold"><span>9:41</span><span>● ● ●</span></div>
                 <div className="flex-1 overflow-y-auto px-4 pb-3">
