@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -7,9 +7,10 @@ import { FEATURES, FEATURE_KEYS, type Profile } from "@/lib/types";
 import InstallAppButton from "@/components/InstallAppButton";
 import "./app-shell.css";
 import {
-  BarChart3, Bell, BookOpen, CalendarCheck, ChevronDown, ClipboardList, FileText,
-  FolderOpen, Home, LayoutGrid, Megaphone, Menu, MessageCircleQuestion,
-  MoreHorizontal, Play, Search, ShieldCheck, TrendingUp, User, Users, Video, Wallet, X,
+  BarChart3, Bell, BookOpen, CalendarCheck, ChevronDown, ChevronLeft, ChevronRight,
+  ClipboardList, FileText, FolderOpen, Home, LayoutGrid, Lock, Maximize, Megaphone,
+  Menu, MessageCircleQuestion, MoreHorizontal, NotebookPen, Pause, Play, Search,
+  ShieldCheck, TrendingUp, User, Users, Video, Wallet, X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -47,6 +48,42 @@ function ytId(url: string) {
   if (!url) return "";
   const m = url.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{6,})/);
   return m ? m[1] : "";
+}
+function fmtTime(sec: number) { const t = Math.max(0, Math.floor(sec || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; }
+// Teacher notes may be a Google Drive link — extract the file id from the
+// common /file/d/<id>/ and /open?id=<id> forms (also /drive/...?id=<id>).
+function driveFileId(text: string) {
+  if (!text) return "";
+  let m = text.match(/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  m = text.match(/drive\.google\.com\/[^\s)"]*[?&]id=([A-Za-z0-9_-]+)/);
+  return m ? m[1] : "";
+}
+function driveLink(text: string) {
+  const m = (text || "").match(/https?:\/\/drive\.google\.com\/[^\s)"]+/);
+  return m ? m[0] : "";
+}
+// YouTube IFrame API, loaded once on demand for the lecture player only.
+// The player is created with controls=0 so the student gets our own
+// play/pause/seek/speed controls — no YouTube share or "Watch on YouTube"
+// button in the player chrome. (Honest limit: this deters sharing, it does
+// not make the video un-downloadable — see the player copy and AUDIT.md.)
+declare global { interface Window { YT?: any; onYouTubeIframeAPIReady?: () => void; } }
+let ytApiPromise: Promise<any> | null = null;
+function loadYTApi(): Promise<any> {
+  if (typeof window === "undefined") return Promise.reject(new Error("No browser window."));
+  if ((window as any).YT?.Player) return Promise.resolve((window as any).YT);
+  if (ytApiPromise) return ytApiPromise;
+  ytApiPromise = new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    tag.onerror = () => reject(new Error("Could not load the YouTube player. Check your connection and try again."));
+    document.head.appendChild(tag);
+    const prev = (window as any).onYouTubeIframeAPIReady;
+    (window as any).onYouTubeIframeAPIReady = () => { if (prev) prev(); resolve((window as any).YT); };
+    setTimeout(() => reject(new Error("YouTube player timed out.")), 15000);
+  });
+  return ytApiPromise;
 }
 // Lucide icons for every dashboard section (sidebar, bottom nav, More
 // sheet). Visual only — destinations and role gating are unchanged.
@@ -142,6 +179,24 @@ export default function DashboardPage() {
   const [batchClass, setBatchClass] = useState("");
   const [expandedBatch, setExpandedBatch] = useState("");
   const [learnBatch, setLearnBatch] = useState("");
+  // ---- Secure lecture player ----
+  // The player view opens only for enrolled students (see the lectures
+  // section). The YouTube IFrame API gives us play/pause state, seek and
+  // speed control and the ended event — with controls=0 there is no
+  // YouTube share button in the player chrome.
+  const [playingLecture, setPlayingLecture] = useState<Row | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playTime, setPlayTime] = useState(0);
+  const [playDur, setPlayDur] = useState(0);
+  const [playSpeed, setPlaySpeed] = useState(1);
+  const [sessionPaused, setSessionPaused] = useState(false);
+  const [wmPos, setWmPos] = useState({ top: 12, left: 8 });
+  const [noteText, setNoteText] = useState("");
+  const [noteSaved, setNoteSaved] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const playerRef = useRef<any>(null);
+  const playerWrapRef = useRef<HTMLDivElement | null>(null);
+  const timeRef = useRef(0);
 
   useEffect(() => { loadProfile(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   // Session restoration: if the session arrives (or is refreshed) after
@@ -166,6 +221,67 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { if (profile) loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [section, profile]);
+  // ---- Lecture player lifecycle ----
+  // (Re)creates the YouTube player whenever the opened lecture changes;
+  // destroys it on close/switch so only one player ever exists. Progress
+  // is saved on pause and on end (and on "Mark as watched"), never in a
+  // per-second write loop — the 1s interval only updates the time display.
+  useEffect(() => {
+    const lec = playingLecture;
+    if (!lec) { setIsPlaying(false); setPlayTime(0); setPlayDur(0); timeRef.current = 0; return; }
+    const vid = ytId(s(lec, "youtube_url"));
+    if (!vid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const prog = (data.lecture_progress || []).find(x => s(x, "lecture_id") === s(lec, "id"));
+    const resume = prog ? Number(prog.watched_seconds || 0) : 0;
+    const savedNote = (data.lecture_notes || []).find(x => s(x, "lecture_id") === s(lec, "id"));
+    setNoteText(String(savedNote?.content || ""));
+    setNoteSaved("");
+    loadYTApi().then((YT) => {
+      if (cancelled) return;
+      try { playerRef.current?.destroy?.(); } catch { /* ignore */ }
+      playerRef.current = new YT.Player("lecture-player", {
+        videoId: vid,
+        playerVars: { autoplay: 0, modestbranding: 1, rel: 0, controls: 0, disablekb: 0, fs: 1, playsinline: 1, start: resume > 10 ? Math.floor(resume) : 0 },
+        events: {
+          onReady: (e: any) => { setPlayDur(e.target.getDuration?.() || 0); try { e.target.setPlaybackRate?.(1); } catch { /* ignore */ } },
+          onStateChange: (e: any) => {
+            const st = e.data;
+            if (st === 1) {
+              setIsPlaying(true); setSessionPaused(false);
+              timer = setInterval(() => { try { const t = playerRef.current?.getCurrentTime?.() || 0; timeRef.current = t; setPlayTime(t); } catch { /* ignore */ } }, 1000);
+            } else {
+              setIsPlaying(false);
+              if (timer) clearInterval(timer);
+              if (st === 2 || st === 0) {
+                const t = playerRef.current?.getCurrentTime?.() || timeRef.current;
+                void saveProgress(s(lec, "id"), s(lec, "batch_id"), t, st === 0);
+              }
+            }
+          },
+        },
+      });
+    }).catch((err: any) => setMsg(err?.message || "Could not load the video player."));
+    return () => { cancelled = true; if (timer) clearInterval(timer); try { playerRef.current?.destroy?.(); } catch { /* ignore */ } playerRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingLecture]);
+  // Watermark drifts to a new random spot every 15s while a lecture is open.
+  useEffect(() => {
+    if (!playingLecture) return;
+    const t = setInterval(() => setWmPos({ top: 8 + Math.random() * 68, left: 6 + Math.random() * 55 }), 15000);
+    return () => clearInterval(t);
+  }, [playingLecture]);
+  // Auto-pause when the student leaves the tab or the window loses focus —
+  // a recording made while the tab is hidden would otherwise keep playing.
+  useEffect(() => {
+    if (!playingLecture) return;
+    const pause = () => { try { if (playerRef.current?.getPlayerState?.() === 1) { playerRef.current.pauseVideo(); setSessionPaused(true); } } catch { /* ignore */ } };
+    const onVis = () => { if (document.hidden) pause(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("blur", pause);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("blur", pause); };
+  }, [playingLecture]);
 
   async function loadProfile() {
     // Session restore (auto-logout fix): getSession() reads the stored
@@ -255,7 +371,7 @@ export default function DashboardPage() {
     await fetchAll("courses");
     await fetchAll("coupons");
     if (role === "admin") {
-      for (const t of ["enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","notifications","fees","attendance","enquiries","teacher_requests","onboarding_invites","timetable","course_enrollments","payments","subscriptions","doubt_questions","doubt_answers","doubt_votes"]) await fetchAll(t);
+      for (const t of ["enrollments","lectures","materials","assignments","submissions","tests","test_results","live_classes","doubts","notifications","fees","attendance","enquiries","teacher_requests","onboarding_invites","timetable","course_enrollments","payments","subscriptions","doubt_questions","doubt_answers","doubt_votes","lecture_notes","lecture_progress"]) await fetchAll(t);
     } else if (role === "teacher") {
       const myBatches = (out.batches || []).filter(b => s(b, "teacher_id") === profile.id).map(b => s(b, "id"));
       await fetchAll("enrollments");
@@ -274,7 +390,7 @@ export default function DashboardPage() {
       await fetchAll("submissions");
       await fetchAll("test_results");
       await fetchEq("notifications", "user_id", profile.id);
-      out.fees = []; out.payments = []; out.enquiries = []; out.teacher_requests = []; out.onboarding_invites = []; out.course_enrollments = []; out.doubt_votes = [];
+      out.fees = []; out.payments = []; out.enquiries = []; out.teacher_requests = []; out.onboarding_invites = []; out.course_enrollments = []; out.doubt_votes = []; out.lecture_notes = []; out.lecture_progress = [];
       await fetchAll("doubt_votes");
     } else {
       // student / parent: everything is scoped to the effective student.
@@ -289,6 +405,8 @@ export default function DashboardPage() {
       await fetchEq("attendance", "student_id", eid);
       await fetchEq("submissions", "student_id", eid);
       await fetchEq("test_results", "student_id", eid);
+      await fetchEq("lecture_notes", "student_id", eid);
+      await fetchEq("lecture_progress", "student_id", eid);
       await fetchEq("notifications", "user_id", profile.id);
       await fetchEq("course_enrollments", "student_id", eid);
       // Batch content only for batches with an active enrolment/subscription.
@@ -376,9 +494,10 @@ export default function DashboardPage() {
   });
   // Learning progress, computed honestly from existing data only: tasks
   // completed (assignment submitted / test result entered) vs tasks set for
-  // that batch. There is no lecture-watch table, so lectures are NOT counted
-  // and no fake percentage is ever shown. Returns null when the batch has
-  // no assignments/tests yet.
+  // that batch. Lecture watching is tracked separately in lecture_progress
+  // (see the player below) and is NOT folded into this number, so no fake
+  // percentage is ever shown. Returns null when the batch has no
+  // assignments/tests yet.
   const batchProgress = (batchId: string) => {
     const asg = (data.assignments || []).filter(a => s(a, "batch_id") === batchId);
     const tst = (data.tests || []).filter(t => s(t, "batch_id") === batchId);
@@ -388,6 +507,66 @@ export default function DashboardPage() {
     const doneTst = tst.filter(x => (data.test_results || []).some(y => s(y, "test_id") === s(x, "id") && s(y, "student_id") === effectiveId)).length;
     return { done: doneAsg + doneTst, total };
   };
+
+  // ---- Secure lecture player helpers ----
+  const lectureProg = (lectureId: string) => (data.lecture_progress || []).find(x => s(x, "lecture_id") === lectureId);
+  const lectureNote = (lectureId: string) => (data.lecture_notes || []).find(x => s(x, "lecture_id") === lectureId);
+  function mergeProgress(row: Row) {
+    setData(prev => { const rows = [...(prev.lecture_progress || [])]; const i = rows.findIndex(x => s(x, "lecture_id") === s(row, "lecture_id")); if (i >= 0) rows[i] = { ...rows[i], ...row }; else rows.push(row); return { ...prev, lecture_progress: rows }; });
+  }
+  function mergeNote(row: Row) {
+    setData(prev => { const rows = [...(prev.lecture_notes || [])]; const i = rows.findIndex(x => s(x, "lecture_id") === s(row, "lecture_id")); if (i >= 0) rows[i] = { ...rows[i], ...row }; else rows.push(row); return { ...prev, lecture_notes: rows }; });
+  }
+  async function saveProgress(lectureId: string, batchId: string, seconds: number, completed: boolean) {
+    if (!lectureId || !effectiveId) return;
+    const row: Row = { student_id: effectiveId, lecture_id: lectureId, batch_id: batchId || null, watched_seconds: Math.max(0, Math.floor(seconds)), completed, updated_at: new Date().toISOString() };
+    mergeProgress(row);
+    await supabase.from("lecture_progress").upsert(row, { onConflict: "student_id,lecture_id" });
+  }
+  async function markWatched(lec: Row) {
+    const seconds = playDur || timeRef.current;
+    await saveProgress(s(lec, "id"), s(lec, "batch_id"), seconds, true);
+    setMsg("Marked as watched ✓");
+  }
+  async function saveNote() {
+    const lec = playingLecture; if (!lec || !effectiveId) return;
+    setNoteBusy(true); setNoteSaved("");
+    const row: Row = { student_id: effectiveId, lecture_id: s(lec, "id"), batch_id: s(lec, "batch_id") || null, content: noteText, updated_at: new Date().toISOString() };
+    const { error } = await supabase.from("lecture_notes").upsert(row, { onConflict: "student_id,lecture_id" });
+    setNoteBusy(false);
+    if (error) { setNoteSaved(error.message); return; }
+    mergeNote(row);
+    setNoteSaved("Notes saved ✓");
+  }
+  function openLecture(lec: Row) {
+    // Close any open player first (openSection clears it), then open the
+    // new one — so only one player ever exists.
+    setSessionPaused(false);
+    openSection("lectures");
+    setPlayingLecture(lec);
+  }
+  function continueLearning(batchId: string) {
+    setLearnBatch(batchId);
+    const ls = (data.lectures || []).filter(l => s(l, "batch_id") === batchId);
+    const first = ls[ls.length - 1] || ls[0] || null;
+    if (first) openLecture(first as Row); else openSection("lectures");
+  }
+  function togglePlay() {
+    const p = playerRef.current; if (!p) return;
+    try { if (isPlaying) p.pauseVideo(); else { setSessionPaused(false); p.playVideo(); } } catch { /* ignore */ }
+  }
+  function seekTo(sec: number) {
+    const p = playerRef.current; if (!p) return;
+    try { p.seekTo(sec, true); timeRef.current = sec; setPlayTime(sec); } catch { /* ignore */ }
+  }
+  function changeSpeed(v: number) {
+    setPlaySpeed(v);
+    try { playerRef.current?.setPlaybackRate?.(v); } catch { /* ignore */ }
+  }
+  function toggleFullscreen() {
+    const el = playerWrapRef.current; if (!el) return;
+    try { if (document.fullscreenElement) void document.exitFullscreen(); else void el.requestFullscreen?.(); } catch { /* ignore */ }
+  }
 
   function isEnabled(key: string) {
     if (!profile) return false;
@@ -406,7 +585,7 @@ export default function DashboardPage() {
     // open Reports/Users/Permissions as a student lands on Overview with
     // an explanation instead of the section.
     if (profile && !allowedSections(profile.role).includes(key)) { setSection("overview"); setMsg("That section is not available for your role."); setDrawer(false); setMoreOpen(false); return; }
-    setSection(key); setDrawer(false); setMoreOpen(false); setMsg(""); window.scrollTo({ top: 0 });
+    setSection(key); setDrawer(false); setMoreOpen(false); setMsg(""); setPlayingLecture(null); window.scrollTo({ top: 0 });
   }
   async function logout() { await supabase.auth.signOut(); router.push("/"); }
   async function togglePerm(row: Row) {
@@ -992,7 +1171,7 @@ export default function DashboardPage() {
                     <div className="min-w-0 flex-1"><p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">Continue learning</p><p className="truncate font-extrabold">{s(first, "name")}</p><p className="truncate text-xs text-slate-500">{s(first, "class_label")} · {s(first, "subject")}{pct !== null ? ` · ${pct}% complete` : ""}</p></div>
                   </div>
                   {pct !== null && <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${pct}%` }} /></div>}
-                  <button onClick={() => { setLearnBatch(s(first, "id")); openSection("lectures"); }} disabled={!active} className="btn-brand mt-3 w-full !py-2.5 text-sm">{active ? "Continue Learning →" : "Plan expired — renew in My Batches"}</button>
+                  <button onClick={() => continueLearning(s(first, "id"))} disabled={!active} className="btn-brand mt-3 w-full !py-2.5 text-sm">{active ? "Continue Learning →" : "Plan expired — renew in My Batches"}</button>
                 </div>); })()}
                 <div className="card mt-5"><div className="flex items-center justify-between"><h3 className="flex items-center gap-2 font-extrabold"><BookOpen className="h-4 w-4 text-brand" />Currently enrolled batches</h3><button onClick={() => { setBatchTab("all"); openSection("batches"); }} className="text-xs font-bold text-brand-dark">Browse all batches →</button></div>
                   {myBatches.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet — explore batches, pick a plan and pay via Cashfree to start learning.</p> : <ul className="mt-2 space-y-2 text-sm">{myBatches.map(b => { const sub = mySubs.find(x => s(x, "batch_id") === s(b, "id")); const st = sub ? subStatus(sub) : "active"; return <li key={s(b, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3"><span><b>{s(b, "name")}</b> · {s(b, "class_label")} · {s(b, "subject")}</span><span className="flex items-center gap-2 text-xs font-bold text-slate-500">{sub ? `${s(sub, "plan_name") || "Plan"} · Valid until ${s(sub, "valid_until") || "—"}` : "Enrolled"}{st === "expired" && <button onClick={() => { setBatchTab("mine"); openSection("batches"); }} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-extrabold text-white">Renew →</button>}</span></li>; })}</ul>}
@@ -1302,7 +1481,7 @@ export default function DashboardPage() {
                     {mySub && <p className="text-xs text-slate-500">{s(mySub, "plan_name") || "Plan"} · Valid until {s(mySub, "valid_until") || "—"}{boughtPlan ? ` · ${planValidity(boughtPlan)}` : ""}</p>}
                     {prog ? <div><div className="flex items-baseline justify-between gap-2"><p className="text-xs font-bold text-slate-600">Learning progress</p><p className="text-xs font-extrabold text-brand-dark">{prog.done} of {prog.total} tasks · {Math.round(prog.done / prog.total * 100)}%</p></div><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.round(prog.done / prog.total * 100)}%` }} /></div><p className="mt-1 text-[11px] text-slate-500">Tasks = assignments submitted + tests attempted in this batch.</p></div> : <p className="text-xs text-slate-500">Progress tracking coming soon — complete assignments and tests in this batch and your progress will show here.</p>}
                     <div className="flex gap-2">
-                      <button onClick={() => { setLearnBatch(bid); openSection("lectures"); }} disabled={!activeBatchIds.has(bid)} className="btn-brand app-press flex-1 !py-2.5 text-xs">Continue Learning →</button>
+                      <button onClick={() => continueLearning(bid)} disabled={!activeBatchIds.has(bid)} className="btn-brand app-press flex-1 !py-2.5 text-xs">Continue Learning →</button>
                       {expired && <button onClick={() => payAndEnrol(bid, selId || undefined)} disabled={payBusy === bid} className="app-press rounded-xl border-2 border-brand px-3 py-2.5 text-xs font-extrabold text-brand-dark">{payBusy === bid ? "Starting payment…" : `Renew — Pay ₹${sel ? String(sel.price) : String(b.price)} via Cashfree`}</button>}
                     </div>
                   </div>;
@@ -1342,6 +1521,13 @@ export default function DashboardPage() {
         </div>}
       </div>
     );
+    // Lectures visible to this user (already enrolment-gated by canSeeBatch),
+    // in chronological order for the player (previous / next), grouped by
+    // subject for the list below.
+    const lectureList = (data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch));
+    const lectureListChrono = [...lectureList].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    const lectureGroups: [string, Row[]][] = [];
+    lectureListChrono.forEach(l => { const subj = s(l, "subject") || "General"; const g = lectureGroups.find(g => g[0] === subj); if (g) g[1].push(l); else lectureGroups.push([subj, [l]]); });
     if (section === "lectures") return (
       <div>
         {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Add lecture</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1350,16 +1536,115 @@ export default function DashboardPage() {
           <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
           <div><label className="label">Chapter</label><input className="input" value={form.chapter || ""} onChange={e => setForm({ ...form, chapter: e.target.value })} /></div>
           <div><label className="label">YouTube URL</label><input className="input" value={form.youtube_url || ""} onChange={e => setForm({ ...form, youtube_url: e.target.value })} placeholder="https://www.youtube.com/watch?v=…" /></div>
-          <div><label className="label">Notes</label><input className="input" value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+          <div><label className="label">Notes</label><input className="input" value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Text notes, or paste a Google Drive link" /><p className="mt-1 text-xs text-slate-500">Tip: paste a Google Drive link — set the file to “Anyone with the link can view” or students will see an access request.</p></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save lecture</button></form>}
-        {!isStaff && activeBatchIds.size === 0 && <p className="card mt-3 text-sm text-slate-600">Enrol in a batch to access its lectures — pick a plan in Batches and pay via Cashfree.</p>}
+        {!isStaff && activeBatchIds.size === 0 && (
+          myEnrols.length > 0
+            ? <div className="card mt-3"><p className="flex items-center gap-2 font-extrabold"><Lock className="h-4 w-4 text-brand" />Your plan has expired</p><p className="mt-1 text-sm text-slate-600">Your enrolment in this batch has ended, so its lectures are locked. Renew your plan to watch again.</p><button onClick={() => { setBatchTab("mine"); openSection("batches"); }} className="btn-brand mt-3 !py-2.5 text-sm">Renew my batch →</button></div>
+            : <div className="card mt-3"><p className="flex items-center gap-2 font-extrabold"><Lock className="h-4 w-4 text-brand" />Lectures unlock after enrolment</p><p className="mt-1 text-sm text-slate-600">Recorded lectures, notes and the video player open only after you buy the batch and your payment is confirmed. Nothing here is shared or downloadable before that.</p><button onClick={() => { setBatchTab("all"); openSection("batches"); }} className="btn-brand mt-3 !py-2.5 text-sm">Browse batches →</button></div>
+        )}
         {learnBatch && <p className="card mt-3 text-sm">Showing lectures for <b>{batchName(learnBatch)}</b> <button onClick={() => setLearnBatch("")} className="ml-1 font-bold text-brand-dark underline">Show all my lectures ✕</button></p>}
+        {isStaff ? (
         <div className="mt-4 space-y-2">
           {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).length === 0 && empty("No lectures yet.")}
           {(data.lectures || []).filter(l => canSeeBatch(s(l, "batch_id")) && (!learnBatch || s(l, "batch_id") === learnBatch)).map(l => { const id = ytId(s(l, "youtube_url")); return <div key={s(l, "id")} className="card !p-4"><b className="flex items-center gap-2 text-sm"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-tint text-brand-dark"><Play className="h-4 w-4" /></span>{s(l, "title")}</b><p className="mt-1 text-xs text-slate-500">{batchName(s(l, "batch_id"))} · {s(l, "subject")} · {s(l, "chapter")}</p>
             {id ? <div className="app-video mt-2 aspect-video w-full max-w-xl"><iframe className="h-full w-full" src={`https://www.youtube.com/embed/${id}`} title={s(l, "title")} allowFullScreen /></div> : s(l, "youtube_url") ? <a className="mt-2 inline-block text-sm font-bold text-brand-dark underline" href={s(l, "youtube_url")} target="_blank" rel="noreferrer">Watch on YouTube</a> : null}
             {s(l, "notes") && <p className="mt-2 text-sm text-slate-600">{s(l, "notes")}</p>}</div>; })}
         </div>
+        ) : (
+        <div>
+        {/* ---- Secure lecture player (enrolled students only) ---- */}
+        {playingLecture && canSeeBatch(s(playingLecture, "batch_id")) && (() => {
+          const lec = playingLecture;
+          const bid = s(lec, "batch_id");
+          const idx = lectureListChrono.findIndex(l => s(l, "id") === s(lec, "id"));
+          const prevL = idx > 0 ? lectureListChrono[idx - 1] : null;
+          const nextL = idx >= 0 && idx < lectureListChrono.length - 1 ? lectureListChrono[idx + 1] : null;
+          const prog = lectureProg(s(lec, "id"));
+          const vid = ytId(s(lec, "youtube_url"));
+          const notesVal = s(lec, "notes");
+          const dId = driveFileId(notesVal);
+          const dLink = driveLink(notesVal);
+          const notesText = dLink ? notesVal.replace(dLink, "").trim() : notesVal;
+          const wmEmail = profile?.email ? `${String(profile.email).slice(0, 3)}•••` : "";
+          return (
+            <div className="card mt-3 !p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">{batchName(bid)}{s(lec, "subject") ? ` · ${s(lec, "subject")}` : ""}{s(lec, "chapter") ? ` · ${s(lec, "chapter")}` : ""}</p>
+                  <h3 className="mt-1 font-extrabold">{s(lec, "title")}</h3>
+                </div>
+                <button onClick={() => setPlayingLecture(null)} className="app-press shrink-0 rounded-lg border px-3 py-1.5 text-xs font-bold">✕ Close</button>
+              </div>
+              {/* The video URL is never shown or linked here. controls=0 hides
+                  YouTube's own share / "Watch on YouTube" chrome; the moving
+                  watermark ties any recording to this student's account. */}
+              {!vid ? (
+                <p className="mt-3 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">No video attached to this lecture yet — ask your teacher to add the YouTube link.</p>
+              ) : (
+              <>
+              <div ref={playerWrapRef} onContextMenu={e => e.preventDefault()} className="lecture-player relative mt-3 aspect-video w-full select-none overflow-hidden rounded-2xl bg-black">
+                <div id="lecture-player" className="h-full w-full" />
+                <div className="pointer-events-none absolute z-10 select-none rounded bg-black/40 px-2 py-1 text-[11px] font-bold text-white/80" style={{ top: `${wmPos.top}%`, left: `${wmPos.left}%` }}>{effectiveName}{wmEmail ? ` · ${wmEmail}` : ""}</div>
+                {sessionPaused && <button onClick={togglePlay} className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/60 px-4 text-center font-bold text-white"><Pause className="h-8 w-8" />Session paused — you switched away from this tab.<span className="text-sm font-normal opacity-80">Tap to resume watching.</span></button>}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"} className="app-press flex h-11 w-11 items-center justify-center rounded-full bg-brand text-white">{isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}</button>
+                <span className="text-xs font-bold tabular-nums">{fmtTime(playTime)} / {fmtTime(playDur)}</span>
+                <input type="range" min={0} max={Math.max(playDur, 1)} step={1} value={Math.min(playTime, playDur || 0)} onChange={e => seekTo(Number(e.target.value))} className="min-w-0 flex-1 accent-[#07573f]" aria-label="Seek" />
+                <select value={playSpeed} onChange={e => changeSpeed(Number(e.target.value))} className="rounded-lg border px-2 py-2 text-xs font-bold" aria-label="Playback speed">{[0.5, 0.75, 1, 1.25, 1.5, 2].map(v => <option key={v} value={v}>{v}×</option>)}</select>
+                <button onClick={toggleFullscreen} aria-label="Fullscreen" className="app-press flex h-11 w-11 items-center justify-center rounded-full border"><Maximize className="h-5 w-5" /></button>
+                <button onClick={() => void markWatched(lec)} className="app-press rounded-full bg-brand-tint px-3 py-2 text-xs font-extrabold text-brand-dark">{Boolean(prog?.completed) ? "Watched ✓" : "Mark as watched"}</button>
+              </div>
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-500"><ShieldCheck className="h-3.5 w-3.5 shrink-0 text-brand-dark" />Protected playback — this video is watermarked to your account. Sharing or recording it is not allowed.</p>
+              {prog && !Boolean(prog.completed) && n(prog, "watched_seconds") > 10 && <p className="mt-1 text-xs font-bold text-brand-dark">Resumed from {fmtTime(n(prog, "watched_seconds"))} — your progress is saved.</p>}
+              </>
+              )}
+              {dId ? (
+                <div className="mt-4 rounded-2xl border p-3">
+                  <h4 className="flex items-center gap-2 font-extrabold"><FileText className="h-4 w-4 text-brand" />Notes</h4>
+                  {notesText && <p className="mt-1 text-sm text-slate-600">{notesText}</p>}
+                  <div className="mt-2 aspect-video w-full overflow-hidden rounded-xl bg-slate-100"><iframe src={`https://drive.google.com/file/d/${dId}/preview`} className="h-full w-full" title="Lecture notes preview" allowFullScreen /></div>
+                  <a href={dLink} target="_blank" rel="noreferrer" className="btn-brand mt-2 inline-block !py-2 text-xs">Open in Google Drive ↗</a>
+                  <p className="mt-1 text-[11px] text-slate-500">If the preview asks for access, the file is not shared publicly — ask your teacher to set it to “Anyone with the link can view”.</p>
+                </div>
+              ) : notesVal ? (
+                <div className="mt-4 rounded-2xl border p-3"><h4 className="flex items-center gap-2 font-extrabold"><FileText className="h-4 w-4 text-brand" />Notes</h4><p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{notesVal}</p></div>
+              ) : null}
+              <div className="mt-4 rounded-2xl border p-3">
+                <h4 className="flex items-center gap-2 font-extrabold"><NotebookPen className="h-4 w-4 text-brand" />My notes</h4>
+                <p className="mt-1 text-xs text-slate-500">Your own private notes for this lecture — only you can see them.</p>
+                <textarea rows={4} className="input mt-2" value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Write what you learnt, doubts to ask, formulas to remember…" />
+                <div className="mt-2 flex items-center gap-2"><button onClick={() => void saveNote()} disabled={noteBusy} className="btn-brand !py-2 text-xs">{noteBusy ? "Saving…" : "Save my notes"}</button>{noteSaved && <span className="text-xs font-bold text-brand-dark">{noteSaved}</span>}</div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button onClick={() => prevL && openLecture(prevL)} disabled={!prevL} className="app-press flex items-center gap-1 rounded-full border px-4 py-2 text-xs font-extrabold disabled:opacity-40"><ChevronLeft className="h-4 w-4" />Previous lecture</button>
+                <button onClick={() => nextL && openLecture(nextL)} disabled={!nextL} className="app-press ml-auto flex items-center gap-1 rounded-full bg-brand px-4 py-2 text-xs font-extrabold text-white disabled:opacity-40">Next lecture<ChevronRight className="h-4 w-4" /></button>
+              </div>
+            </div>
+          );
+        })()}
+        {/* ---- Lecture list, grouped by subject ---- */}
+        {lectureGroups.length === 0 && empty("No lectures yet.")}
+        {lectureGroups.map(([subject, items]) => (
+          <div key={subject} className="mt-4">
+            <h3 className="font-extrabold">{subject}</h3>
+            <div className="mt-2 space-y-2">
+              {items.map(l => { const prog = lectureProg(s(l, "id")); const dur = n(l, "duration_minutes"); return (
+                <div key={s(l, "id")} className="card flex items-center gap-3 !p-3">
+                  <button onClick={() => openLecture(l)} className="app-press flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand text-white" aria-label={`Watch ${s(l, "title")}`}><Play className="h-5 w-5" /></button>
+                  <div className="min-w-0 flex-1">
+                    <b className="block truncate text-sm">{s(l, "title")}</b>
+                    <p className="truncate text-xs text-slate-500">{batchName(s(l, "batch_id"))}{s(l, "chapter") ? ` · ${s(l, "chapter")}` : ""}{dur ? ` · ${dur} min` : ""}</p>
+                    {prog && <p className="text-xs font-bold text-brand-dark">{Boolean(prog.completed) ? "Watched ✓" : `Resume from ${fmtTime(n(prog, "watched_seconds"))}`}</p>}
+                  </div>
+                  <button onClick={() => openLecture(l)} className="app-press shrink-0 rounded-full bg-brand-tint px-3 py-2 text-xs font-extrabold text-brand-dark">Watch</button>
+                </div>); })}
+            </div>
+          </div>
+        ))}
+        </div>
+        )}
       </div>
     );
     if (section === "materials") return (

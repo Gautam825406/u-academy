@@ -103,6 +103,29 @@ create table if not exists public.lectures (
   duration_minutes int, created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
 );
+-- Lecture watch progress + the student's own private notes per lecture.
+-- Powers "Resume from …" / "Watched ✓" in the secure lecture player.
+-- (Teacher notes live on the lectures row itself — plain text, or a Google
+-- Drive link the teacher pastes in; Drive sharing is the teacher's job.)
+create table if not exists public.lecture_progress (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  lecture_id uuid not null references public.lectures(id) on delete cascade,
+  batch_id uuid references public.batches(id) on delete set null,
+  watched_seconds int not null default 0 check (watched_seconds >= 0),
+  completed boolean not null default false,
+  updated_at timestamptz not null default now(),
+  unique (student_id, lecture_id)
+);
+create table if not exists public.lecture_notes (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  lecture_id uuid not null references public.lectures(id) on delete cascade,
+  batch_id uuid references public.batches(id) on delete set null,
+  content text not null default '',
+  updated_at timestamptz not null default now(),
+  unique (student_id, lecture_id)
+);
 create table if not exists public.materials (
   id uuid primary key default gen_random_uuid(),
   batch_id uuid references public.batches(id) on delete set null,
@@ -308,7 +331,8 @@ begin
     'batches','enrollments','lectures','materials','assignments','submissions',
     'tests','test_results','attendance','fees','live_classes','doubts',
     'announcements','notifications','role_permissions','payments',
-    'courses','coupons','timetable','course_enrollments','batch_plans','subscriptions']) loop
+    'courses','coupons','timetable','course_enrollments','batch_plans','subscriptions',
+    'lecture_progress','lecture_notes']) loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy "auth read %I" on public.%I for select using (auth.role() = ''authenticated'')', t, t);
     execute format('create policy "auth write %I" on public.%I for insert with check (auth.role() = ''authenticated'')', t, t);
@@ -341,6 +365,10 @@ create policy "auth update onboarding_invites" on public.onboarding_invites for 
 create index if not exists idx_enrollments_batch on public.enrollments(batch_id);
 create index if not exists idx_enrollments_student on public.enrollments(student_id);
 create index if not exists idx_lectures_batch on public.lectures(batch_id);
+create index if not exists idx_lecture_progress_student on public.lecture_progress(student_id);
+create index if not exists idx_lecture_progress_lecture on public.lecture_progress(lecture_id);
+create index if not exists idx_lecture_notes_student on public.lecture_notes(student_id);
+create index if not exists idx_lecture_notes_lecture on public.lecture_notes(lecture_id);
 create index if not exists idx_assignments_batch on public.assignments(batch_id);
 create index if not exists idx_submissions_assignment on public.submissions(assignment_id);
 create index if not exists idx_attendance_student on public.attendance(student_id);
