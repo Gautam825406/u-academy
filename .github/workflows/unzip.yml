@@ -1,0 +1,30 @@
+name: Extract codebase
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip codebase
+        run: |
+          unzip -o u-academy.zip
+          rm -f u-academy.zip
+          if [ -f "u-academy/package.json" ]; then
+            shopt -s dotglob
+            mv u-academy/* .
+            rmdir u-academy
+          fi
+          ls -la
+      - name: Commit extracted files
+        run: |
+          git config user.name "Gautam825406"
+          git config user.email "keshrigautam825406@gmail.com"
+          git add -A
+          git commit -m "Extract u-academy codebase from zip" || echo "nothing to commit"
+          git push
