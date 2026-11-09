@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
       await supabase.from("course_enrollments").upsert({ course_id: courseId, student_id: studentId, price_paid: amount }, { onConflict: "course_id,student_id" });
     }
     // Paid fee receipt for the enrolment — one per order.
-    const receipt = `U++-CF-${orderId.replace(/^U\+\+-/, "").slice(0, 12)}`;
+    const receipt = `U++-CF-${orderId.replace(/^U(?:\+\+|AA)-/, "").slice(0, 12)}`;
     const { data: existingFee } = await supabase.from("fees").select("id").eq("receipt_no", receipt).maybeSingle();
     if (!existingFee) {
       await supabase.from("fees").insert({

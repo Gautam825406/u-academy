@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
       );
     }
     // One fee receipt per order — same receipt format as the return route.
-    const receipt = `U++-CF-${orderId.replace(/^U\+\+-/, "").slice(0, 12)}`;
+    const receipt = `U++-CF-${orderId.replace(/^U(?:\+\+|AA)-/, "").slice(0, 12)}`;
     const { data: existingFee } = await supabase
       .from("fees")
       .select("id")

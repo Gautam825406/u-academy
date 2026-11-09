@@ -104,7 +104,10 @@ export async function POST(request: NextRequest) {
     const base = isProd ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
     console.log(`[cashfree create-order] env=${isProd ? "PROD" : "SANDBOX"} base=${base}`);
     const origin = new URL(request.url).origin;
-    const orderId = `U++-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Cashfree order_id may contain only letters, digits, hyphen and
+    // underscore (max 50 chars) — the old "U++-..." prefix contained '+'
+    // and Cashfree rejected it with "order_id format not valid".
+    const orderId = `UAA-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const res = await fetch(`${base}/orders`, {
       method: "POST",
