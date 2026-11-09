@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FEATURES, FEATURE_KEYS, type Profile } from "@/lib/types";
+import InstallAppButton from "@/components/InstallAppButton";
 
 type Row = Record<string, unknown>;
 const s = (r: Row | null | undefined, k: string) => String((r as Row)?.[k] ?? "");
@@ -545,7 +546,7 @@ export default function DashboardPage() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {JUMP_TO.filter(k => isEnabled(k)).map(k => { const i = FEATURE_KEYS.indexOf(k as never); return <button key={k} onClick={() => openSection(k)} className="card !p-4 text-left font-bold hover:border-brand">{FEATURES[i]}</button>; })}
               </div>
-              <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are paid online via Cashfree when Admin has added the Cashfree keys in Vercel; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p></div>
+              <div className="card mt-5"><h3 className="font-extrabold">Getting started</h3><p className="mt-1 text-sm text-slate-600">This academy starts empty. {profile.role === "admin" ? "Create your first batch in Batches, add teachers/students in Users, then publish lectures and assignments." : "Your Admin will add you to a batch. Once enrolled, lectures, assignments and tests appear here."} Fees are paid online via Cashfree when Admin has added the Cashfree keys in Vercel; until then, pay at the institute in cash/UPI and Admin confirms your enrolment.</p><InstallAppButton className="mt-3" /></div>
             </div>
             );
           })()}

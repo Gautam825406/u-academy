@@ -2,6 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import InstallAppButton from "@/components/InstallAppButton";
 
 const COURSES = [
   { band: "6-8", name: "Foundation Builder", tag: "Classes 6–8 · Classroom", subs: ["Maths","Science","English","SST"], points: ["Concept-building with daily practice questions","Olympiad & NTSE-style thinking, gently introduced","Monthly parent review of progress"] },
@@ -98,7 +99,7 @@ export default function Landing() {
             <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow"><span className="h-2 w-2 rounded-full bg-accent" />Admissions open — new batches for Classes 6 to 12</span>
             <h1 className="mt-5 text-4xl font-extrabold leading-[1.05] tracking-tight md:text-6xl">Your marks,<br />levelled up. <span className="text-brand">U</span><span className="bg-accent/40">++</span></h1>
             <p className="mt-5 max-w-lg text-lg text-slate-600">U++ Academy pairs small, focused classroom batches with a student app that carries the whole day with you — live classes, recorded lectures, assignments, tests and results, with parents kept in the loop at every step.</p>
-            <div className="mt-7 flex flex-wrap gap-3"><a href="#demo" className="btn-brand">Book a free demo class</a><a href="#courses" className="btn-ghost">Explore courses</a></div>
+            <div className="mt-7 flex flex-wrap gap-3"><a href="#demo" className="btn-brand">Book a free demo class</a><a href="#courses" className="btn-ghost">Explore courses</a><InstallAppButton /></div>
             <ul className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-sm font-semibold text-slate-600"><li>✓ CBSE · ICSE · State Board</li><li>✓ Maths, Science, English &amp; more</li><li>✓ Offline batches + online revision</li></ul>
             <div className="mt-8 max-w-md rounded-2xl border bg-white p-4 shadow-sm"><b>Small batches, full attention</b><p className="text-sm text-slate-500">— every student is known by name. · Classes 6–12</p><p className="mt-2 text-sm">Assignment evaluated · Quadratic Equations · <b>18 / 20</b> · Attendance <b>92%</b> · Parent report sent for this month</p></div>
           </div>
