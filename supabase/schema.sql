@@ -24,14 +24,19 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 alter table public.profiles enable row level security;
+-- SECURITY DEFINER helper: checks the caller's admin role WITHOUT querying
+-- profiles under RLS. The old EXISTS (select from profiles) check inside a
+-- profiles policy caused infinite recursion (ERROR 42P17) and made every
+-- profile read fail — dashboard showed "No profile found" even though the
+-- row existed. Never put a profiles subquery inside a profiles policy.
+create or replace function public.is_admin() returns boolean
+language sql security definer stable as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin');
+$$;
 create policy "Users can read own profile" on public.profiles for select using (auth.uid() = id);
 create policy "Users can update own profile" on public.profiles for update using (auth.uid() = id);
-create policy "Admins can read all profiles" on public.profiles for select using (
-  exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin')
-);
-create policy "Admins can update all profiles" on public.profiles for update using (
-  exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin')
-);
+create policy "Admins can read all profiles" on public.profiles for select using (public.is_admin());
+create policy "Admins can update all profiles" on public.profiles for update using (public.is_admin());
 -- Insert is done by the app right after signUp (authenticated user inserts own row).
 create policy "Users can insert own profile" on public.profiles for insert with check (auth.uid() = id);
 
