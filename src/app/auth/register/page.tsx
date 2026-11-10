@@ -56,11 +56,21 @@ export default function RegisterPage() {
     e.preventDefault();
     if (f.password !== f.confirm) return setMsg("Passwords do not match.");
     if (f.password.length < 6) return setMsg("Password must be at least 6 characters.");
+    // Mobile is required and is what Cashfree uses to reach the student
+    // about a payment — validate it as an Indian mobile (10 digits,
+    // starting 6–9; a leading 91 / 0 is stripped) and store it normalised.
+    const digits = f.mobile.replace(/\D/g, "");
+    const mobile = digits.length === 12 && digits.startsWith("91") ? digits.slice(2)
+      : digits.length === 11 && digits.startsWith("0") ? digits.slice(1) : digits;
+    if (mobile.length !== 10 || !/^[6-9]/.test(mobile)) {
+      return setMsg("Enter a valid 10-digit Indian mobile number (starting 6–9) — it is used for payment and batch updates.");
+    }
+    const email = f.email.trim();
     setBusy(true); setMsg("");
     try {
       const supabase = createClient();
       // Onboarding check (teacher request — public-readable before sign-up).
-      const pre = await checkOnboarding(supabase, f.email.trim(), false);
+      const pre = await checkOnboarding(supabase, email, false);
       if (pre.note) setOnboardNote(pre.note);
       const chosenRole: Role = pre.forced || role;
       if (pre.forced) setRole(pre.forced);
@@ -69,18 +79,18 @@ export default function RegisterPage() {
       // (supabase/fix-profile-trigger.sql) creates the profile row
       // server-side even if the client insert below fails.
       const meta = {
-        full_name: f.full_name, mobile: f.mobile, role: chosenRole,
+        full_name: f.full_name, mobile, role: chosenRole,
         class_label: f.class_label, board: f.board, subject: chosenSubject,
         child_name: f.child_name, child_student_id: f.child_student_id,
         institute_name: f.institute_name, city: f.city,
       };
       let { data: auth, error } = await supabase.auth.signUp({
-        email: f.email, password: f.password, options: { data: meta },
+        email, password: f.password, options: { data: meta },
       });
       if (error && /already registered/i.test(error.message)) {
         // Login already exists (e.g. profile insert failed last time):
         // sign in with it instead of failing.
-        const s = await supabase.auth.signInWithPassword({ email: f.email, password: f.password });
+        const s = await supabase.auth.signInWithPassword({ email, password: f.password });
         if (s.error) throw s.error;
         auth = s.data;
         error = null;
@@ -90,7 +100,7 @@ export default function RegisterPage() {
       if (!userId) throw new Error("No user returned. Check Supabase Auth settings (email confirmations may require verification — see README).");
       // Invite check (authenticated-only table — now that the invitee has a
       // session). An Admin invite forces the invited role and its details.
-      const post = await checkOnboarding(supabase, f.email.trim(), true);
+      const post = await checkOnboarding(supabase, email, true);
       if (post.note) setOnboardNote(post.note);
       const invitedRole: Role | null = post.forced;
       if (invitedRole) setRole(invitedRole);
@@ -105,7 +115,7 @@ export default function RegisterPage() {
       const { count } = await supabase.from("profiles").select("id", { count: "exact", head: true });
       const finalRole: Role = count === 0 ? "admin" : effectiveRole;
       const { error: pErr } = await supabase.from("profiles").upsert({
-        id: userId, full_name: f.full_name, email: f.email, mobile: f.mobile, role: finalRole,
+        id: userId, full_name: f.full_name, email, mobile, role: finalRole,
         class_label: post.class_label || f.class_label, board: post.board || f.board, subject: post.subject || chosenSubject,
         child_name: f.child_name, child_student_id: f.child_student_id,
         institute_name: f.institute_name, city: f.city,
@@ -128,17 +138,17 @@ export default function RegisterPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-5 py-10">
-      <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" className="h-9 w-9 rounded-xl object-cover" />← U++ Academy</Link>
+      <Link href="/" className="flex items-center gap-2 font-extrabold"><img src="/logo.jpg" alt="U++ Academy" width={36} height={36} className="h-9 w-9 rounded-xl object-cover" />← U++ Academy</Link>
       <div className="mt-6 grid gap-8 md:grid-cols-2">
         <div><h1 className="text-3xl font-extrabold">Join U++ Academy</h1><p className="mt-2 text-slate-600">Create your account in a minute. One account opens the whole academy — classroom batches, the student app, tests and reports.</p>
         <ul className="mt-5 space-y-3 text-sm text-slate-600">{ROLES.map(r => <li key={r.key}><b>{r.label}s</b> — {r.desc}</li>)}</ul></div>
         <form onSubmit={submit} className="card">
           <h2 className="text-xl font-extrabold">Register</h2><p className="text-sm text-slate-500">First, tell us who is joining.</p>
-          <div className="mt-4 grid grid-cols-4 gap-2">{ROLES.map(r => <button type="button" key={r.key} onClick={() => setRole(r.key)} className={`rounded-2xl border px-2 py-3 text-sm font-bold ${role===r.key ? "border-brand bg-brand-tint" : "bg-white"}`}>{r.label}</button>)}</div>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{ROLES.map(r => <button type="button" key={r.key} onClick={() => setRole(r.key)} className={`rounded-2xl border px-2 py-3 text-sm font-bold ${role===r.key ? "border-brand bg-brand-tint" : "bg-white"}`}>{r.label}</button>)}</div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div><label className="label">Full name</label><input required className="input" value={f.full_name} onChange={e=>set("full_name",e.target.value)} /></div>
             <div><label className="label">Email</label><input required type="email" className="input" value={f.email} onChange={e=>set("email",e.target.value)} /></div>
-            <div><label className="label">Mobile number</label><input required className="input" value={f.mobile} onChange={e=>set("mobile",e.target.value)} /></div>
+            <div><label className="label">Mobile number</label><input required type="tel" inputMode="tel" autoComplete="tel" placeholder="10-digit mobile" className="input" value={f.mobile} onChange={e=>set("mobile",e.target.value)} /></div>
             {role==="student" && (<><div><label className="label">Class</label><select className="input" value={f.class_label} onChange={e=>set("class_label",e.target.value)}>{["Class 6","Class 7","Class 8","Class 9","Class 10","Class 11","Class 12"].map(c=><option key={c}>{c}</option>)}</select></div>
             <div><label className="label">Board</label><select className="input" value={f.board} onChange={e=>set("board",e.target.value)}>{["CBSE","ICSE","State Board","Other"].map(c=><option key={c}>{c}</option>)}</select></div></>)}
             {role==="teacher" && (<><div><label className="label">Subject you teach</label><select className="input" value={f.subject} onChange={e=>set("subject",e.target.value)}>{["Mathematics","Science","Physics","Chemistry","Biology","English","Social Science","Accounts","Economics"].map(c=><option key={c}>{c}</option>)}</select></div></>)}

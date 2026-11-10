@@ -24,7 +24,7 @@ export default function AboutPage() {
       <main>
         <section className="mx-auto max-w-6xl px-5 py-10">
           <p className="text-xs font-extrabold uppercase tracking-widest text-brand">About U++ Academy</p>
-          <h1 className="mt-2 text-4xl font-extrabold leading-tight md:text-5xl">About U++ Academy</h1>
+          <h1 className="mt-2 text-3xl font-extrabold leading-tight sm:text-4xl md:text-5xl">About U++ Academy</h1>
           <p className="mt-4 max-w-3xl text-lg text-slate-600">
             U++ Academy is a coaching and tuition academy for students of Classes 6 to 12, serving Mayurhand, Chouparan, Madhyagopali and nearby areas of Jharkhand. The academy teaches all major school subjects across all school boards, in offline classroom batches and through its online student app.
           </p>

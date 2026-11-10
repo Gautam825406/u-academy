@@ -15,7 +15,7 @@ export default function PrivacyPage() {
       <SiteHeader />
       <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Privacy Policy" }]} />
       <main className="mx-auto max-w-3xl px-5 py-10">
-        <h1 className="text-4xl font-extrabold">Privacy Policy</h1>
+        <h1 className="text-3xl font-extrabold sm:text-4xl">Privacy Policy</h1>
         <p className="mt-2 text-sm text-slate-500">U++ Academy — last updated 10 November 2026.</p>
         <div className="mt-8 space-y-6 text-slate-700">
           <section><h2 className="text-xl font-extrabold text-slate-900">1. Information we collect</h2><p className="mt-2">When you use this website or the U++ Academy student app, we collect the information you provide directly: student and parent names, mobile numbers, class and board, and the contents of admission enquiries and teacher applications. Registered users also provide an email address and password. The app records academic information needed for teaching: enrolments, attendance, assignment submissions, test attempts and results, fees and receipts.</p></section>

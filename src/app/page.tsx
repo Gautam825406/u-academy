@@ -132,10 +132,10 @@ export default function Landing() {
       <section className="bg-[#eaf1f0]">
         <div className="mx-auto grid max-w-6xl gap-10 px-5 py-14 md:grid-cols-2 md:items-center">
           <div>
-            <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow">
-              <span className="h-2 w-2 rounded-full bg-accent" />Admissions open — Classes 6 to 12 · Mayurhand, Chouparan &amp; Madhyagopali
+            <span className="inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border bg-white px-3 py-1.5 text-left text-xs font-bold text-slate-600 shadow">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-accent" />Admissions open — Classes 6 to 12 · Mayurhand, Chouparan &amp; Madhyagopali
             </span>
-            <h1 className="mt-5 text-4xl font-extrabold leading-[1.05] tracking-tight md:text-5xl">
+            <h1 className="mt-5 text-3xl font-extrabold leading-[1.1] tracking-tight sm:text-4xl md:text-5xl">
               Build a Strong Academic Future with <span className="text-brand">U++ Academy</span>
             </h1>
             <p className="mt-5 max-w-lg text-lg text-slate-600">
@@ -178,7 +178,7 @@ export default function Landing() {
                   </>)}
                   {tab === "lectures" && (<>
                     <h4 className="mt-3 text-sm font-extrabold">Video Lectures</h4>
-                    <div className="mt-2 flex gap-2 overflow-x-auto">{["All", "Maths", "Science", "English"].map((c) => <button key={c} onClick={() => setLecFilter(c)} className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-bold ${lecFilter === c ? "bg-brand text-white" : "bg-white"}`}>{c}</button>)}</div>
+                    <div className="mt-2 flex gap-2 overflow-x-auto">{["All", "Maths", "Science", "English"].map((c) => <button key={c} onClick={() => setLecFilter(c)} className={`whitespace-nowrap rounded-full border px-3 py-2.5 text-xs font-bold ${lecFilter === c ? "bg-brand text-white" : "bg-white"}`}>{c}</button>)}</div>
                     <div className="mt-2 divide-y">
                       {[
                         { t: "Quadratic Equations — Introduction", s: "Maths · Chapter 4 · Notes attached", d: "24:10", st: "Done" },
@@ -196,7 +196,7 @@ export default function Landing() {
                     {QUIZ.map((q, qi) => (
                       <div key={qi} className="mt-3 rounded-2xl border bg-white p-3"><p className="text-sm font-bold">{q.q}</p>
                         {q.opts.map((o, oi) => (
-                          <button key={oi} onClick={() => { const a = [...answers]; a[qi] = oi; setAnswers(a); setScore(null); }} className={`mt-2 block w-full rounded-xl border px-3 py-2 text-left text-sm font-semibold ${answers[qi] === oi ? "border-brand bg-brand-tint" : "bg-slate-50"}`}>{o}</button>
+                          <button key={oi} onClick={() => { const a = [...answers]; a[qi] = oi; setAnswers(a); setScore(null); }} className={`mt-2 block w-full rounded-xl border px-3 py-2.5 text-left text-sm font-semibold ${answers[qi] === oi ? "border-brand bg-brand-tint" : "bg-slate-50"}`}>{o}</button>
                         ))}
                       </div>
                     ))}
@@ -211,7 +211,7 @@ export default function Landing() {
                   </>)}
                 </div>
                 <div className="grid grid-cols-4 border-t bg-white px-2 py-2 pb-4">
-                  {(["home", "lectures", "tests", "progress"] as const).map((t) => <button key={t} onClick={() => setTab(t)} className={`flex flex-col items-center gap-0.5 rounded-lg py-1 text-[11px] font-bold capitalize ${tab === t ? "text-brand" : "text-slate-400"}`}>{t === "home" ? "🏠" : t === "lectures" ? "▶" : t === "tests" ? "✏" : "📈"}{t}</button>)}
+                  {(["home", "lectures", "tests", "progress"] as const).map((t) => <button key={t} onClick={() => setTab(t)} className={`flex flex-col items-center gap-0.5 rounded-lg py-2 text-[11px] font-bold capitalize ${tab === t ? "text-brand" : "text-slate-400"}`}>{t === "home" ? "🏠" : t === "lectures" ? "▶" : t === "tests" ? "✏" : "📈"}{t}</button>)}
                 </div>
               </div>
             </div>
@@ -276,19 +276,19 @@ export default function Landing() {
           {batchesLoaded && batches.length > 0 && (
             <div className="mt-6 grid gap-5 md:grid-cols-3">
               {batches.map((b) => (
-                <article key={b.id} className="card flex flex-col">
+                <article key={b.id} className="card flex min-w-0 flex-col break-words">
                   {b.thumbnail_url ? (
                     <img src={b.thumbnail_url} alt={b.name} loading="lazy" className="mb-3 h-36 w-full rounded-xl object-cover" />
                   ) : (
                     <div className="mb-3 grid h-24 place-items-center rounded-xl bg-brand-tint text-2xl font-extrabold text-brand">{b.class_label || b.name}</div>
                   )}
                   <span className="inline-block w-fit rounded-full bg-slate-900 px-3 py-1 text-xs font-extrabold text-white">{b.board || "All Boards"}</span>
-                  <h3 className="mt-3 text-xl font-extrabold">{b.name}</h3>
+                  <h3 className="mt-3 break-words text-xl font-extrabold">{b.name}</h3>
                   {b.description && <p className="mt-1 line-clamp-2 text-sm text-slate-600">{b.description}</p>}
                   <dl className="mt-3 space-y-1 text-sm text-slate-600">
-                    <div className="flex justify-between"><dt className="font-semibold">Subjects</dt><dd>{b.subject || "All Subjects"}</dd></div>
-                    <div className="flex justify-between"><dt className="font-semibold">Fee</dt><dd className="font-extrabold text-slate-900">{b.price == null ? "On enquiry" : b.price === 0 ? "Free" : `₹${b.price}`}</dd></div>
-                    <div className="flex justify-between"><dt className="font-semibold">Status</dt><dd className="font-semibold text-brand">Open</dd></div>
+                    <div className="flex justify-between gap-3"><dt className="shrink-0 font-semibold">Subjects</dt><dd className="break-words text-right">{b.subject || "All Subjects"}</dd></div>
+                    <div className="flex justify-between gap-3"><dt className="shrink-0 font-semibold">Fee</dt><dd className="font-extrabold text-slate-900">{b.price == null ? "On enquiry" : b.price === 0 ? "Free" : `₹${b.price}`}</dd></div>
+                    <div className="flex justify-between gap-3"><dt className="shrink-0 font-semibold">Status</dt><dd className="font-semibold text-brand">Open</dd></div>
                   </dl>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <Link href="/auth/register" className="btn-brand !py-2.5 text-sm">Join this batch</Link>
@@ -370,7 +370,7 @@ export default function Landing() {
             ["Student Progress", "Marks, attendance and weak areas in one place, shared with parents."],
           ].map(([h, p]) => <div key={h} className="card"><h3 className="font-extrabold">{h}</h3><p className="mt-2 text-sm text-slate-600">{p}</p></div>)}
         </div>
-        <div className="mt-8 flex flex-wrap gap-2">{(["student", "parent", "teacher"] as const).map((r) => <button key={r} onClick={() => setRoleTab(r)} className={`rounded-full border px-4 py-2 text-sm font-bold capitalize ${roleTab === r ? "bg-brand text-white" : "bg-white"}`}>For {r}s</button>)}</div>
+        <div className="mt-8 flex flex-wrap gap-2">{(["student", "parent", "teacher"] as const).map((r) => <button key={r} onClick={() => setRoleTab(r)} className={`rounded-full border px-4 py-2.5 text-sm font-bold capitalize ${roleTab === r ? "bg-brand text-white" : "bg-white"}`}>For {r}s</button>)}</div>
         <div className="card mt-4">
           {roleTab === "student" && <><h3 className="text-lg font-extrabold">The student’s whole school day, after school</h3><ul className="mt-3 space-y-2 text-sm text-slate-600"><li>✓ Today’s classes and one-tap join for live sessions</li><li>✓ Assignments with deadlines, submitted by photo or PDF</li><li>✓ Marks, remarks and a weak-chapter list that updates itself</li><li>✓ Ask-a-doubt chat with your own teachers</li></ul></>}
           {roleTab === "parent" && <><h3 className="text-lg font-extrabold">No more “how was tuition today?”</h3><ul className="mt-3 space-y-2 text-sm text-slate-600"><li>✓ Attendance percentage and absence alerts</li><li>✓ Every test result with the teacher’s remarks</li><li>✓ Pending assignments at a glance</li><li>✓ Fee status and receipts in one place</li></ul></>}
@@ -390,7 +390,7 @@ export default function Landing() {
 
       {/* JOIN AS A TEACHER */}
       <section id="teach" className="mx-auto max-w-6xl px-5 pb-16">
-        <div className="grid gap-8 rounded-[28px] border bg-white p-8 shadow-sm md:grid-cols-2">
+        <div className="grid gap-8 rounded-[28px] border bg-white p-5 shadow-sm sm:p-8 md:grid-cols-2">
           <div><p className="text-xs font-extrabold uppercase tracking-widest text-brand">Teach with U++</p><h2 className="mt-2 text-3xl font-extrabold">Join as a Teacher</h2><p className="mt-2 text-slate-600">Teach Maths, Science, English or Commerce to small, focused batches — with the student app doing the paperwork: attendance, assignments, tests and parent updates.</p>
           <ul className="mt-5 space-y-2 text-sm font-semibold text-slate-600"><li>✓ Small batches — every student known by name</li><li>✓ Recorded lectures and ready-made test patterns</li><li>✓ Admin reviews every application before onboarding</li></ul>
           <p className="mt-5 text-sm text-slate-500">Already approved by Admin? <Link href="/auth/register" className="font-bold text-brand">Register here</Link> with the same email — your Teacher role will be confirmed automatically.</p></div>
@@ -399,7 +399,7 @@ export default function Landing() {
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div><label className="label">Full name</label><input required className="input" value={teach.full_name} onChange={(e) => setTeach({ ...teach, full_name: e.target.value })} /></div>
               <div><label className="label">Email</label><input required type="email" className="input" value={teach.email} onChange={(e) => setTeach({ ...teach, email: e.target.value })} /></div>
-              <div><label className="label">Mobile number</label><input required className="input" value={teach.mobile} onChange={(e) => setTeach({ ...teach, mobile: e.target.value })} /></div>
+              <div><label className="label">Mobile number</label><input required type="tel" inputMode="tel" autoComplete="tel" className="input" value={teach.mobile} onChange={(e) => setTeach({ ...teach, mobile: e.target.value })} /></div>
               <div><label className="label">Subject you teach</label><select className="input" value={teach.subject} onChange={(e) => setTeach({ ...teach, subject: e.target.value })}>{["Mathematics", "Science", "Physics", "Chemistry", "Biology", "English", "Social Science", "Accounts", "Economics"].map((c) => <option key={c}>{c}</option>)}</select></div>
               <div><label className="label">Experience (years)</label><input type="number" min="0" className="input" value={teach.experience_years} onChange={(e) => setTeach({ ...teach, experience_years: e.target.value })} placeholder="e.g. 5" /></div>
               <div><label className="label">Qualification</label><input className="input" value={teach.qualification} onChange={(e) => setTeach({ ...teach, qualification: e.target.value })} placeholder="e.g. B.Sc. Maths, B.Ed." /></div>
@@ -412,14 +412,14 @@ export default function Landing() {
 
       {/* ENQUIRY */}
       <section id="demo" className="mx-auto max-w-6xl px-5 pb-16">
-        <div className="grid gap-8 rounded-[28px] bg-gradient-to-br from-[#0b5f47] to-[#083f31] p-8 text-white md:grid-cols-2">
+        <div className="grid gap-8 rounded-[28px] bg-gradient-to-br from-[#0b5f47] to-[#083f31] p-5 text-white sm:p-8 md:grid-cols-2">
           <div><h2 className="text-3xl font-extrabold">Free demo class</h2><p className="mt-2 text-white/80">Sit in a real class. Then decide. Tell us the student’s class and board, and we’ll prepare an enquiry you can share with the academy office.</p>
           <ul className="mt-5 space-y-2 text-sm font-semibold"><li>✓ A full batch class — the real teachers, the real pace</li><li>✓ Student app account set up the same day</li><li>✓ Short level check, so the batch fit is right</li></ul></div>
           <form onSubmit={submitEnquiry} className="rounded-2xl bg-white p-6 text-slate-900 shadow-xl">
             <h3 className="font-extrabold">Admission enquiry</h3><p className="text-sm text-slate-500">Fill this in — we’ll format it into a ready-to-send enquiry.</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div><label className="label">Student name</label><input required className="input" value={enq.student_name} onChange={(e) => setEnq({ ...enq, student_name: e.target.value })} /></div>
-              <div><label className="label">Parent mobile</label><input required className="input" value={enq.parent_mobile} onChange={(e) => setEnq({ ...enq, parent_mobile: e.target.value })} /></div>
+              <div><label className="label">Parent mobile</label><input required type="tel" inputMode="tel" autoComplete="tel" className="input" value={enq.parent_mobile} onChange={(e) => setEnq({ ...enq, parent_mobile: e.target.value })} /></div>
               <div><label className="label">Class</label><select className="input" value={enq.class_label} onChange={(e) => setEnq({ ...enq, class_label: e.target.value })}>{["Class 6", "Class 7", "Class 8", "Class 9", "Class 10", "Class 11", "Class 12"].map((c) => <option key={c}>{c}</option>)}</select></div>
               <div><label className="label">Board</label><select className="input" value={enq.board} onChange={(e) => setEnq({ ...enq, board: e.target.value })}>{["CBSE", "ICSE", "State Board", "Other"].map((c) => <option key={c}>{c}</option>)}</select></div>
               <div className="sm:col-span-2"><label className="label">Interested in</label><select className="input" value={enq.interested_in} onChange={(e) => setEnq({ ...enq, interested_in: e.target.value })}><option value="">Select a batch…</option>{batches.map((b) => <option key={b.id} value={b.name}>{b.name}</option>)}<option value="Not sure yet — guide me">Not sure yet — guide me</option></select></div>

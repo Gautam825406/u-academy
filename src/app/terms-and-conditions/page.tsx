@@ -15,7 +15,7 @@ export default function TermsPage() {
       <SiteHeader />
       <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Terms and Conditions" }]} />
       <main className="mx-auto max-w-3xl px-5 py-10">
-        <h1 className="text-4xl font-extrabold">Terms and Conditions</h1>
+        <h1 className="text-3xl font-extrabold sm:text-4xl">Terms and Conditions</h1>
         <p className="mt-2 text-sm text-slate-500">U++ Academy — last updated 10 November 2026.</p>
         <div className="mt-8 space-y-6 text-slate-700">
           <section><h2 className="text-xl font-extrabold text-slate-900">1. About these terms</h2><p className="mt-2">These terms apply to the U++ Academy website and student app. By registering an account, sending an enquiry, or enrolling in a batch, you agree to these terms.</p></section>

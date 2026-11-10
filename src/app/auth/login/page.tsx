@@ -28,7 +28,10 @@ export default function LoginPage() {
     e.preventDefault(); setBusy(true); setMsg("");
     try {
       const supabase = createClient();
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      // Trim: a trailing space in the email (easy on a phone keyboard)
+      // makes Supabase reject an otherwise correct login.
+      const cleanEmail = email.trim();
+      const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
       if (error) throw error;
       // Self-heal: if this login has no profile row (old registration bug),
       // create it now — after signIn the session is valid, so RLS allows
@@ -42,7 +45,7 @@ export default function LoginPage() {
           await supabase.from("profiles").upsert({
             id: userId,
             full_name: meta.full_name || email.split("@")[0],
-            email, mobile: meta.mobile || "",
+            email: cleanEmail, mobile: meta.mobile || "",
             role: count === 0 ? "admin" : (meta.role || "student"),
             class_label: meta.class_label || "Class 10", board: meta.board || "CBSE",
             subject: meta.subject || "", child_name: meta.child_name || "",
@@ -72,7 +75,7 @@ export default function LoginPage() {
       const origin = window.location.origin.includes("localhost")
         ? "https://u-academy-zeta.vercel.app"
         : window.location.origin;
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${origin}/auth/callback` });
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${origin}/auth/callback` });
       if (error) throw error;
       setMsg("If that email is registered, a reset link was sent. An Admin can also reset your password from Dashboard > Users.");
     } catch (err: any) { setMsg(err.message || "Could not send reset link."); }
@@ -86,7 +89,7 @@ export default function LoginPage() {
         <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/15 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-24 -left-16 h-80 w-80 rounded-full bg-[#14B8A6]/30 blur-3xl" />
         <div className="relative flex items-center gap-3">
-          <img src="/logo.jpg" alt="" className="h-11 w-11 rounded-2xl object-cover shadow-lg ring-1 ring-white/40" />
+          <img src="/logo.jpg" alt="" width={44} height={44} className="h-11 w-11 rounded-2xl object-cover shadow-lg ring-1 ring-white/40" />
           <span className="text-lg font-extrabold tracking-tight text-white">U++ Academy</span>
         </div>
         <div className="relative">
@@ -126,7 +129,7 @@ export default function LoginPage() {
 
           {/* Compact branding — mobile / tablet only */}
           <div className="login-entrance mb-6 flex items-center gap-3 lg:hidden">
-            <img src="/logo.jpg" alt="U++ Academy" className="h-11 w-11 rounded-2xl object-cover shadow-md ring-1 ring-slate-200" />
+            <img src="/logo.jpg" alt="U++ Academy" width={44} height={44} className="h-11 w-11 rounded-2xl object-cover shadow-md ring-1 ring-slate-200" />
             <div>
               <p className="text-base font-extrabold leading-tight tracking-tight">U++ Academy</p>
               <p className="text-xs font-semibold text-[#64748B]">Learn. Practice. Achieve.</p>

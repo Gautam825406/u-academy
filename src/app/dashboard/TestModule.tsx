@@ -3,15 +3,17 @@
 // bulk import), publish/schedule, results + analytics, manual marks entry.
 // Student: Available / Upcoming / Live / Completed tests, instructions,
 // distraction-free exam screen (palette, timer, autosave, resume, auto-
-// submit), results. SECURITY: correct answers, scoring and deadlines are
+// submit), results. Descriptive (essay) questions are answered in free
+// text, score 0 automatically, and are graded by hand by the teacher
+// (POST /api/tests/grade) — the attempt total is provisional until graded. SECURITY: correct answers, scoring and deadlines are
 // enforced by src/app/api/tests/* — the client never sees answer keys
 // before release and never sends marks.
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye,
+  Check, ChevronDown, ChevronLeft, ChevronRight, Download, Eye,
   FileUp, Flag, ListChecks, Pencil, Play, Plus, Search, Timer, Trash2,
-  Upload, X,
+  X,
 } from "lucide-react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -41,10 +43,20 @@ export type TestModuleProps = {
 };
 
 type Opt = { label: string; text: string };
+// Descriptive questions are answered in free text and graded by hand:
+// they carry no options and no correct answers. Their model answer /
+// grading guidance lives in `explanation` and is only shown to students
+// after grading, when the test's "show explanations" setting allows it.
+type QType = "single" | "multiple" | "descriptive";
+const Q_TYPE_LABEL: Record<QType, string> = {
+  single: "Single correct",
+  multiple: "Multiple correct",
+  descriptive: "Descriptive — manually graded",
+};
 type QDraft = {
   localId: string;
   question_text: string;
-  question_type: "single" | "multiple";
+  question_type: QType;
   options: Opt[];
   correct: string[];
   explanation: string;
@@ -77,7 +89,7 @@ function bankToDraft(b: Row): QDraft {
   return {
     localId: uid(),
     question_text: s(b, "question_text"),
-    question_type: (s(b, "question_type") || "single") as "single" | "multiple",
+    question_type: (s(b, "question_type") || "single") as QType,
     options: LABELS.map(l => ({ label: l, text: s(opts.find(o => String(o.label) === l), "text") })),
     correct: (Array.isArray(b.correct_answers) ? b.correct_answers : []).map(String),
     explanation: s(b, "explanation"),
@@ -89,31 +101,39 @@ function bankToDraft(b: Row): QDraft {
   };
 }
 function draftToBankPayload(q: QDraft, teacherId: string, batchId: string | null) {
+  const descriptive = q.question_type === "descriptive";
   return {
     teacher_id: teacherId, created_by: teacherId, batch_id: batchId,
     subject: q.subject || null, topic: q.topic || null,
     question_type: q.question_type, question_text: q.question_text,
-    options: q.options.filter(o => o.text.trim()),
-    correct_answers: q.correct,
+    options: descriptive ? [] : q.options.filter(o => o.text.trim()),
+    correct_answers: descriptive ? [] : q.correct,
     explanation: q.explanation || null,
-    marks: q.marks, negative_marks: q.negative_marks,
+    marks: q.marks, negative_marks: descriptive ? 0 : q.negative_marks,
     difficulty: q.difficulty, tags: [],
   };
 }
 function draftToTestQ(q: QDraft, testId: string, sortOrder: number) {
+  const descriptive = q.question_type === "descriptive";
   return {
     test_id: testId, question_bank_id: q.bankId || null,
     question_text: q.question_text, question_type: q.question_type,
-    options: q.options.filter(o => o.text.trim()),
-    correct_answers: q.correct,
+    options: descriptive ? [] : q.options.filter(o => o.text.trim()),
+    correct_answers: descriptive ? [] : q.correct,
     explanation: q.explanation || null,
-    marks: q.marks, negative_marks: q.negative_marks,
+    marks: q.marks, negative_marks: descriptive ? 0 : q.negative_marks,
     difficulty: q.difficulty, subject: q.subject || null, topic: q.topic || null,
     sort_order: sortOrder,
   };
 }
 function validateDraft(q: QDraft): string | null {
   if (!q.question_text.trim()) return "Question text is empty.";
+  if (q.question_type === "descriptive") {
+    // No options, no correct answer — the student writes free text and the
+    // teacher grades it against the model answer in `explanation`.
+    if (!(q.marks >= 0)) return "Marks must be 0 or more.";
+    return null;
+  }
   const filled = q.options.filter(o => o.text.trim());
   if (filled.length < 2) return "Add at least two answer options.";
   if (!q.correct.length) return "Pick the correct answer.";
@@ -126,7 +146,7 @@ function validateDraft(q: QDraft): string | null {
 
 // ---------- Bulk import parsing (CSV / JSON / XLSX) ----------
 export type ImportRow = {
-  question: string; option_a: string; option_b: string; option_c: string; option_d: string;
+  question: string; question_type: string; option_a: string; option_b: string; option_c: string; option_d: string;
   correct_answer: string; explanation: string; marks: string; negative_marks: string;
   difficulty: string; subject: string; topic: string;
 };
@@ -153,19 +173,29 @@ function parseCsv(text: string): string[][] {
   if (field !== "" || cur.length) { cur.push(field); if (cur.some(c => c.trim() !== "")) out.push(cur); }
   return out;
 }
-const IMPORT_HEADERS = ["question", "option_a", "option_b", "option_c", "option_d", "correct_answer", "explanation", "marks", "negative_marks", "difficulty", "subject", "topic"];
+const IMPORT_HEADERS = ["question", "question_type", "option_a", "option_b", "option_c", "option_d", "correct_answer", "explanation", "marks", "negative_marks", "difficulty", "subject", "topic"];
 function rowsToDrafts(rows: ImportRow[], existingTexts: Set<string>): ParsedRow[] {
   const seen = new Set<string>();
   return rows.map((r) => {
     const errors: string[] = [];
     const q = (r.question || "").trim();
     if (!q) errors.push("Missing question.");
+    const typeRaw = (r.question_type || "single").trim().toLowerCase();
+    const qType: QType = typeRaw === "multiple" ? "multiple" : typeRaw === "descriptive" ? "descriptive" : "single";
+    if (typeRaw && !["single", "multiple", "descriptive"].includes(typeRaw)) errors.push("question_type must be single, multiple or descriptive.");
+    const descriptive = qType === "descriptive";
     const opts = [r.option_a, r.option_b, r.option_c, r.option_d].map(v => (v || "").trim());
     const filled = opts.filter(Boolean);
-    if (filled.length < 2) errors.push("Need at least two options.");
     const ca = (r.correct_answer || "").trim().toUpperCase();
-    if (!["A", "B", "C", "D"].includes(ca)) errors.push("correct_answer must be A, B, C or D.");
-    else if (!opts["ABCD".indexOf(ca)]) errors.push(`Correct answer ${ca} has no option text.`);
+    if (descriptive) {
+      // Descriptive rows need no options and no correct answer; the
+      // explanation column holds the model answer / grading guidance.
+      if (ca) errors.push("Descriptive questions must not have a correct_answer.");
+    } else {
+      if (filled.length < 2) errors.push("Need at least two options.");
+      if (!["A", "B", "C", "D"].includes(ca)) errors.push("correct_answer must be A, B, C or D.");
+      else if (!opts["ABCD".indexOf(ca)]) errors.push(`Correct answer ${ca} has no option text.`);
+    }
     const marks = Number(r.marks === "" ? 1 : r.marks);
     if (!Number.isFinite(marks) || marks < 0) errors.push("Invalid marks.");
     const neg = Number(r.negative_marks === "" ? 0 : r.negative_marks);
@@ -176,10 +206,10 @@ function rowsToDrafts(rows: ImportRow[], existingTexts: Set<string>): ParsedRow[
     if (q && seen.has(q.toLowerCase())) errors.push("Duplicate question inside this file.");
     if (q) seen.add(q.toLowerCase());
     const draft: QDraft | null = errors.length ? null : {
-      localId: uid(), question_text: q, question_type: "single",
+      localId: uid(), question_text: q, question_type: qType,
       options: LABELS.map((l, i) => ({ label: l, text: opts[i] || "" })),
-      correct: [ca], explanation: (r.explanation || "").trim(),
-      marks, negative_marks: neg, difficulty: diff,
+      correct: descriptive ? [] : [ca], explanation: (r.explanation || "").trim(),
+      marks, negative_marks: descriptive ? 0 : neg, difficulty: diff,
       subject: (r.subject || "").trim(), topic: (r.topic || "").trim(),
       saveToBank: true,
     };
@@ -194,6 +224,7 @@ function parseImportText(text: string, fileName: string): { rows: ImportRow[]; e
       if (!Array.isArray(arr)) return { rows: [], error: "JSON must be an array of questions (or { questions: [...] })." };
       return { rows: arr.map((o: Row) => ({
         question: s(o, "question") || s(o, "question_text"),
+        question_type: s(o, "question_type"),
         option_a: s(o, "option_a"), option_b: s(o, "option_b"), option_c: s(o, "option_c"), option_d: s(o, "option_d"),
         correct_answer: s(o, "correct_answer"),
         explanation: s(o, "explanation"), marks: s(o, "marks"), negative_marks: s(o, "negative_marks"),
@@ -204,19 +235,22 @@ function parseImportText(text: string, fileName: string): { rows: ImportRow[]; e
   const grid = parseCsv(text);
   if (!grid.length) return { rows: [], error: "Empty file." };
   const header = grid[0].map(h => h.trim().toLowerCase());
-  const missing = IMPORT_HEADERS.filter(h => !header.includes(h));
+  // question_type is optional in the header (old templates lack it) and
+  // defaults to "single" per row; every other column is required.
+  const missing = IMPORT_HEADERS.filter(h => h !== "question_type" && !header.includes(h));
   if (missing.length) return { rows: [], error: `Missing columns: ${missing.join(", ")}.` };
   const rows = grid.slice(1).map(cells => {
-    const r: ImportRow = { question: "", option_a: "", option_b: "", option_c: "", option_d: "", correct_answer: "", explanation: "", marks: "", negative_marks: "", difficulty: "", subject: "", topic: "" };
+    const r: ImportRow = { question: "", question_type: "", option_a: "", option_b: "", option_c: "", option_d: "", correct_answer: "", explanation: "", marks: "", negative_marks: "", difficulty: "", subject: "", topic: "" };
     IMPORT_HEADERS.forEach(h => { (r as unknown as Record<string, string>)[h] = (cells[header.indexOf(h)] || "").trim(); });
     return r;
   }).filter(r => Object.values(r).some(v => v !== ""));
   return { rows, error: null };
 }
 const SAMPLE_CSV = [
-  "question,option_a,option_b,option_c,option_d,correct_answer,explanation,marks,negative_marks,difficulty,subject,topic",
-  "What is the capital of India?,Mumbai,Delhi,Kolkata,Chennai,B,Delhi is the capital of India,1,0,Easy,Geography,Indian Geography",
-  "Which language is used for data analysis?,HTML,Python,CSS,XML,B,Python is widely used for data analysis,2,0.5,Medium,Computer Science,Programming",
+  "question,question_type,option_a,option_b,option_c,option_d,correct_answer,explanation,marks,negative_marks,difficulty,subject,topic",
+  "What is the capital of India?,single,Mumbai,Delhi,Kolkata,Chennai,B,Delhi is the capital of India,1,0,Easy,Geography,Indian Geography",
+  "Which language is used for data analysis?,single,HTML,Python,CSS,XML,B,Python is widely used for data analysis,2,0.5,Medium,Computer Science,Programming",
+  "Explain why the seasons change on Earth.,descriptive,,,,,,The tilt of Earth's axis causes seasons as different hemispheres receive varying sunlight through the year.,5,0,Medium,Geography,Seasons",
 ].join("\n");
 function downloadText(name: string, text: string, mime = "text/csv") {
   const blob = new Blob([text], { type: mime });
@@ -284,15 +318,26 @@ export default function TestModule(props: TestModuleProps) {
   const [resTestId, setResTestId] = useState("");
   const [resData, setResData] = useState<Row | null>(null);
   const [resBusy, setResBusy] = useState(false);
+  // ---- Manual grading of descriptive answers (teacher) ----
+  const [gradingAttemptId, setGradingAttemptId] = useState("");
+  const [gradingData, setGradingData] = useState<Row | null>(null);
+  const [gradeMarks, setGradeMarks] = useState<Record<string, string>>({});
+  const [gradeBusy, setGradeBusy] = useState(false);
   // ---- Student exam ----
   const [instrTest, setInstrTest] = useState<Row | null>(null);
   const [exam, setExam] = useState<null | {
     test: Row; attemptId: string; expiresAt: string; attemptNo: number;
-    questions: Row[]; answers: Record<string, string[]>; marked: string[];
+    questions: Row[]; answers: Record<string, string[]>; texts: Record<string, string>; marked: string[];
     visited: string[]; current: number; saving: boolean; confirmSubmit: boolean;
   }>(null);
   const [myResult, setMyResult] = useState<Row | null>(null);
   const [examBusy, setExamBusy] = useState(false);
+  // Debounced autosave timers for descriptive text (one per question).
+  const textSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Student list tab — declared up here with the other state, NOT after the
+  // early returns below: a hook after a conditional return changes the hook
+  // count between renders and React throws "Rendered fewer hooks".
+  const [stuTab, setStuTab] = useState<"available" | "upcoming" | "completed" | "results">("available");
   const examRef = useRef(exam);
   examRef.current = exam;
   const submitGuard = useRef(false);
@@ -387,7 +432,7 @@ export default function TestModule(props: TestModuleProps) {
     });
     setWizQs(((qs as Row[]) || []).map((q, i) => ({
       localId: uid(), question_text: s(q, "question_text"),
-      question_type: (s(q, "question_type") || "single") as "single" | "multiple",
+      question_type: (s(q, "question_type") || "single") as QType,
       options: LABELS.map(l => ({ label: l, text: s(((Array.isArray(q.options) ? q.options : []) as Row[]).find(o => String(o.label) === l), "text") })),
       correct: (Array.isArray(q.correct_answers) ? q.correct_answers : []).map(String),
       explanation: s(q, "explanation"), marks: n(q, "marks") || 1, negative_marks: n(q, "negative_marks") || 0,
@@ -534,6 +579,7 @@ export default function TestModule(props: TestModuleProps) {
         const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
         rows = json.map(o => ({
           question: s(o, "question") || s(o, "question_text"),
+          question_type: s(o, "question_type"),
           option_a: s(o, "option_a"), option_b: s(o, "option_b"), option_c: s(o, "option_c"), option_d: s(o, "option_d"),
           correct_answer: s(o, "correct_answer"),
           explanation: s(o, "explanation"), marks: s(o, "marks"), negative_marks: s(o, "negative_marks"),
@@ -585,12 +631,16 @@ export default function TestModule(props: TestModuleProps) {
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || "Could not start the test.");
       const answers: Record<string, string[]> = {};
-      for (const a of (j.saved_answers as { question_id: string; selected: string[] }[]) || []) answers[a.question_id] = a.selected;
+      const texts: Record<string, string> = {};
+      for (const a of (j.saved_answers as { question_id: string; selected: string[]; answer_text?: string }[]) || []) {
+        answers[a.question_id] = a.selected;
+        if (a.answer_text) texts[a.question_id] = a.answer_text;
+      }
       const qs = (j.questions as Row[]) || [];
       submitGuard.current = false;
       setExam({
         test, attemptId: j.attempt.id, expiresAt: j.attempt.expires_at, attemptNo: j.attempt.attempt_number,
-        questions: qs, answers, marked: [], visited: qs.length ? [s(qs[0], "id")] : [], current: 0, saving: false, confirmSubmit: false,
+        questions: qs, answers, texts, marked: [], visited: qs.length ? [s(qs[0], "id")] : [], current: 0, saving: false, confirmSubmit: false,
       });
       setInstrTest(null);
     } catch (e: unknown) { say(e instanceof Error ? e.message : "Could not start the test."); }
@@ -608,6 +658,50 @@ export default function TestModule(props: TestModuleProps) {
     const cur = examRef.current;
     if (cur) setExam({ ...cur, saving: false });
   }
+  // Descriptive answers: update local text immediately, autosave debounced
+  // (800 ms after the last keystroke) so typing never waits on the network.
+  // The pending save is flushed when the student leaves the question.
+  function saveTextAnswer(qid: string, text: string) {
+    if (!exam) return;
+    setExam({ ...exam, texts: { ...exam.texts, [qid]: text }, saving: true });
+    const timers = textSaveTimers.current;
+    if (timers[qid]) clearTimeout(timers[qid]);
+    timers[qid] = setTimeout(() => {
+      const cur = examRef.current;
+      if (!cur) return;
+      void fetch("/api/tests/answer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attempt_id: cur.attemptId, question_id: qid, selected: [], answer_text: text }),
+      }).catch(() => { /* autosave retries on next change */ })
+        .finally(() => { const c = examRef.current; if (c) setExam({ ...c, saving: false }); });
+    }, 800);
+  }
+  function flushTextAnswer(qid: string): Promise<void> {
+    const timers = textSaveTimers.current;
+    if (!timers[qid]) return Promise.resolve();
+    clearTimeout(timers[qid]);
+    delete timers[qid];
+    const cur = examRef.current;
+    if (!cur) return Promise.resolve();
+    const text = cur.texts[qid] || "";
+    return fetch("/api/tests/answer", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attempt_id: cur.attemptId, question_id: qid, selected: [], answer_text: text }),
+    }).catch(() => { /* autosave retries on next change */ })
+      .then(() => { const c = examRef.current; if (c) setExam({ ...c, saving: false }); });
+  }
+  // Clear a descriptive answer (local text + server row).
+  function clearTextAnswer(qid: string) {
+    if (!exam) return;
+    const timers = textSaveTimers.current;
+    if (timers[qid]) { clearTimeout(timers[qid]); delete timers[qid]; }
+    setExam({ ...exam, texts: { ...exam.texts, [qid]: "" }, saving: true });
+    void fetch("/api/tests/answer", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attempt_id: exam.attemptId, question_id: qid, selected: [], answer_text: "" }),
+    }).catch(() => { /* autosave retries on next change */ })
+      .finally(() => { const c = examRef.current; if (c) setExam({ ...c, saving: false }); });
+  }
   function toggleOption(q: Row, label: string) {
     if (!exam) return;
     const qid = s(q, "id");
@@ -622,6 +716,9 @@ export default function TestModule(props: TestModuleProps) {
     if (!cur || submitGuard.current) return;
     submitGuard.current = true;
     try {
+      // Flush any debounced descriptive autosave so the last keystrokes are
+      // stored before the attempt is scored.
+      await Promise.all(Object.keys(textSaveTimers.current).map(qid => flushTextAnswer(qid)));
       const res = await fetch("/api/tests/submit", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ attempt_id: cur.attemptId }),
@@ -674,12 +771,53 @@ export default function TestModule(props: TestModuleProps) {
     } catch (e: unknown) { say(e instanceof Error ? e.message : "Could not load results."); }
     finally { setResBusy(false); }
   }
+  // ---------- Manual grading (descriptive answers) ----------
+  async function loadGrading(testId: string, attemptId: string) {
+    setGradingAttemptId(attemptId); setGradingData(null); setGradeMarks({}); setGradeBusy(true);
+    try {
+      const r = await fetch(`/api/tests/results?test_id=${encodeURIComponent(testId)}&attempt_id=${encodeURIComponent(attemptId)}`);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Could not load the attempt.");
+      const g = (j.grading as Row) || null;
+      setGradingData(g);
+      if (g) {
+        const preset: Record<string, string> = {};
+        for (const a of ((g.answers as Row[]) || [])) {
+          if (a.manual_marks !== null && a.manual_marks !== undefined) preset[s(a, "question_id")] = String(a.manual_marks);
+        }
+        setGradeMarks(preset);
+      }
+    } catch (e: unknown) { say(e instanceof Error ? e.message : "Could not load the attempt."); }
+    finally { setGradeBusy(false); }
+  }
+  async function saveGrade(questionId: string, maxMarks: number) {
+    if (!gradingData) return;
+    const raw = (gradeMarks[questionId] ?? "").trim();
+    const marks = Number(raw);
+    if (raw === "" || !Number.isFinite(marks) || marks < 0 || marks > maxMarks) {
+      return say(`Enter marks between 0 and ${maxMarks} for this answer.`);
+    }
+    setGradeBusy(true);
+    try {
+      const r = await fetch("/api/tests/grade", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attempt_id: s(gradingData, "attempt_id"), question_id: questionId, marks }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Could not save the grade.");
+      say(`Grade saved — attempt total is now ${j.attempt.score} / ${j.attempt.max_marks}${j.attempt.pending_manual ? " (still awaiting grading on other answers)" : " (grading complete)"}.`);
+      await loadGrading(resTestId, s(gradingData, "attempt_id"));
+      await loadTeacherResults(resTestId);
+      refreshModule();
+    } catch (e: unknown) { say(e instanceof Error ? e.message : "Could not save the grade."); }
+    finally { setGradeBusy(false); }
+  }
   function downloadResultsCsv() {
     if (!resData) return;
     const atts = (resData.attempts as Row[]) || [];
-    const lines = [["Student", "Attempt", "Score", "Max marks", "Percentage", "Passed", "Time taken (s)", "Submitted at"].join(",")];
+    const lines = [["Student", "Attempt", "Score", "Max marks", "Percentage", "Passed", "Needs grading", "Time taken (s)", "Submitted at"].join(",")];
     for (const a of atts) {
-      lines.push([nameOf(s(a, "student_id")), String(a.attempt_number), String(a.score), String(a.max_marks), String(a.percentage), a.passed ? "Pass" : "Fail", String(a.time_taken_seconds), s(a, "submitted_at")].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
+      lines.push([nameOf(s(a, "student_id")), String(a.attempt_number), String(a.score), String(a.max_marks), String(a.percentage), a.passed ? "Pass" : "Fail", a.manual_grading_pending ? "Yes" : "No", String(a.time_taken_seconds), s(a, "submitted_at")].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
     }
     downloadText(`test-results-${resTestId}.csv`, lines.join("\n"));
   }
@@ -713,12 +851,17 @@ export default function TestModule(props: TestModuleProps) {
     const q = exam.questions[exam.current];
     const qid = q ? s(q, "id") : "";
     const sel = (exam.answers[qid] || []) as string[];
-    const answered = exam.questions.filter(x => (exam.answers[s(x, "id")] || []).length > 0).length;
+    const isDesc = (x: Row) => s(x, "question_type") === "descriptive";
+    // Descriptive questions count as answered once any text is typed.
+    const isAnswered = (x: Row) => isDesc(x)
+      ? (exam.texts[s(x, "id")] || "").trim().length > 0
+      : (exam.answers[s(x, "id")] || []).length > 0;
+    const answered = exam.questions.filter(isAnswered).length;
     const markedCount = exam.marked.length;
     const notVisited = exam.questions.filter(x => !exam.visited.includes(s(x, "id"))).length;
     const statusOf = (x: Row) => {
       const id = s(x, "id");
-      const a = (exam.answers[id] || []).length > 0;
+      const a = isAnswered(x);
       const m = exam.marked.includes(id);
       if (a && m) return "answered-marked";
       if (a) return "answered";
@@ -732,6 +875,8 @@ export default function TestModule(props: TestModuleProps) {
     };
     const goTo = (i: number) => {
       if (i < 0 || i >= exam.questions.length) return;
+      // Save any typed descriptive text before leaving this question.
+      if (qid) void flushTextAnswer(qid);
       const id = s(exam.questions[i], "id");
       setExam({ ...exam, current: i, visited: exam.visited.includes(id) ? exam.visited : [...exam.visited, id] });
     };
@@ -741,18 +886,31 @@ export default function TestModule(props: TestModuleProps) {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0"><b className="block truncate text-sm">{s(exam.test, "title")}</b><span className="text-xs text-slate-500">Attempt {exam.attemptNo} · {exam.questions.length} questions · {answered} answered</span></div>
             <div className="flex items-center gap-2">
-              <span className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-sm font-extrabold ${examRemaining < 300 ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}><Timer className="h-4 w-4" />{fmtClock(examRemaining)}</span>
+              <span className={`flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-sm font-extrabold ${examRemaining < 300 ? "bg-red-100 text-red-700" : "bg-brand-tint text-brand-dark"}`}><Timer className="h-4 w-4" />{fmtClock(examRemaining)}</span>
               {exam.saving && <span className="text-xs font-bold text-slate-400">Saving…</span>}
-              <button onClick={() => setExam({ ...exam, confirmSubmit: true })} className="btn-brand !py-2 text-xs">Submit test</button>
+              <button onClick={() => setExam({ ...exam, confirmSubmit: true })} className="btn-brand shrink-0 !py-2 text-xs">Submit test</button>
             </div>
           </div>
         </div>
         <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_220px]">
           <div className="card !p-4 sm:!p-5">
             {q ? <>
-              <p className="text-xs font-extrabold uppercase tracking-wide text-slate-400">Question {exam.current + 1} of {exam.questions.length} · {s(q, "subject")} {s(q, "topic") ? `· ${s(q, "topic")}` : ""} · {n(q, "marks")} mark{n(q, "marks") !== 1 ? "s" : ""}{n(q, "negative_marks") > 0 ? ` · −${n(q, "negative_marks")} negative` : ""}</p>
+              <p className="text-xs font-extrabold uppercase tracking-wide text-slate-400">Question {exam.current + 1} of {exam.questions.length} · {s(q, "subject")} {s(q, "topic") ? `· ${s(q, "topic")}` : ""} · {n(q, "marks")} mark{n(q, "marks") !== 1 ? "s" : ""}{n(q, "negative_marks") > 0 ? ` · −${n(q, "negative_marks")} negative` : ""}{isDesc(q) ? " · Descriptive" : ""}</p>
               <p className="mt-2 text-base font-bold leading-relaxed">{s(q, "question_text")}</p>
               {s(q, "question_type") === "multiple" && <p className="mt-1 text-xs font-bold text-brand-dark">Select all correct options.</p>}
+              {isDesc(q) ? <>
+                <p className="mt-1 text-xs font-bold text-amber-800">Descriptive answer — write in your own words. Your teacher grades it after you submit; it counts as 0 until graded.</p>
+                <textarea
+                  className="mt-4 min-h-[160px] w-full resize-y rounded-2xl border-2 border-slate-200 bg-white p-3 text-base leading-relaxed focus:border-brand focus:outline-none"
+                  rows={6}
+                  value={exam.texts[qid] || ""}
+                  onChange={e => saveTextAnswer(qid, e.target.value)}
+                  onBlur={() => void flushTextAnswer(qid)}
+                  placeholder="Write your answer here…"
+                  aria-label="Your answer"
+                />
+                <p className="mt-1 text-right text-xs text-slate-400">{(exam.texts[qid] || "").trim().length} characters · saves automatically as you type</p>
+              </> : (
               <div className="mt-4 space-y-2">
                 {((q.options as { label: string; text: string }[]) || []).map(o => {
                   const on = sel.includes(o.label);
@@ -761,18 +919,18 @@ export default function TestModule(props: TestModuleProps) {
                     <span className="text-sm font-semibold">{o.text}</span>
                   </button>;
                 })}
-              </div>
+              </div>)}
               <div className="mt-4 flex flex-wrap gap-2">
-                <button onClick={() => goTo(exam.current - 1)} disabled={exam.current === 0} className="app-press rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40"><ChevronLeft className="inline h-4 w-4" /> Previous</button>
-                <button onClick={() => goTo(exam.current + 1)} disabled={exam.current === exam.questions.length - 1} className="app-press rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40">Next <ChevronRight className="inline h-4 w-4" /></button>
-                <button onClick={() => setExam({ ...exam, marked: exam.marked.includes(qid) ? exam.marked.filter(x => x !== qid) : [...exam.marked, qid] })} className={`app-press rounded-xl border px-4 py-2.5 text-sm font-bold ${exam.marked.includes(qid) ? "border-amber-400 bg-amber-50 text-amber-800" : ""}`}><Flag className="inline h-4 w-4" /> {exam.marked.includes(qid) ? "Unmark review" : "Mark for review"}</button>
-                <button onClick={() => void saveAnswer(qid, [])} disabled={!sel.length} className="app-press rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40">Clear response</button>
+                <button onClick={() => goTo(exam.current - 1)} disabled={exam.current === 0} className="app-press flex-1 rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40 sm:flex-none"><ChevronLeft className="inline h-4 w-4" /> Previous</button>
+                <button onClick={() => goTo(exam.current + 1)} disabled={exam.current === exam.questions.length - 1} className="app-press flex-1 rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40 sm:flex-none">Next <ChevronRight className="inline h-4 w-4" /></button>
+                <button onClick={() => setExam({ ...exam, marked: exam.marked.includes(qid) ? exam.marked.filter(x => x !== qid) : [...exam.marked, qid] })} className={`app-press flex-1 rounded-xl border px-4 py-2.5 text-sm font-bold sm:flex-none ${exam.marked.includes(qid) ? "border-amber-400 bg-amber-50 text-amber-800" : ""}`}><Flag className="inline h-4 w-4" /> {exam.marked.includes(qid) ? "Unmark review" : "Mark for review"}</button>
+                <button onClick={() => { if (isDesc(q)) clearTextAnswer(qid); else void saveAnswer(qid, []); }} disabled={!sel.length && !(exam.texts[qid] || "").trim()} className="app-press flex-1 rounded-xl border px-4 py-2.5 text-sm font-bold disabled:opacity-40 sm:flex-none">Clear response</button>
               </div>
             </> : <p className="text-sm text-slate-500">No questions in this test.</p>}
           </div>
           <div className="card !p-4">
             <b className="text-sm">Question palette</b>
-            <div className="mt-3 grid grid-cols-5 gap-2 lg:grid-cols-4">
+            <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2 lg:grid-cols-4">
               {exam.questions.map((x, i) => <button key={s(x, "id")} onClick={() => goTo(i)} aria-label={`Question ${i + 1} — ${statusOf(x)}`} className={`app-press flex h-10 items-center justify-center rounded-xl text-sm font-extrabold ${pillCls[statusOf(x)]} ${i === exam.current ? "ring-2 ring-ink ring-offset-1" : ""}`}>{i + 1}</button>)}
             </div>
             <ul className="mt-3 space-y-1 text-xs text-slate-600">
@@ -796,7 +954,7 @@ export default function TestModule(props: TestModuleProps) {
               <li>Time left: <b>{fmtClock(examRemaining)}</b></li>
             </ul>
             <p className="mt-2 text-xs text-slate-500">Once submitted you cannot change your answers.</p>
-            <div className="mt-4 flex gap-2">
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <button onClick={() => void submitExam(false)} className="btn-brand flex-1">Submit now</button>
               <button onClick={() => setExam({ ...exam, confirmSubmit: false })} className="flex-1 rounded-xl border px-4 py-3 font-bold">Keep writing</button>
             </div>
@@ -837,6 +995,7 @@ export default function TestModule(props: TestModuleProps) {
             <li>The timer is set by the server — refreshing the page does not pause it.</li>
             <li>You can revisit questions if the test allows it.</li>
             <li>When time runs out, the test submits itself.</li>
+            <li>Descriptive (written) answers are graded by your teacher after you submit — they count as 0 until graded.</li>
           </ul>
         </div>
         <button onClick={() => { if (window.confirm("Start the test now? The timer starts immediately.")) void startTest(t); }} disabled={examBusy} className="btn-brand mt-4 w-full sm:w-auto">{examBusy ? "Starting…" : "Start test →"}</button>
@@ -859,15 +1018,26 @@ export default function TestModule(props: TestModuleProps) {
           {myResult.auto === true && <p className="mt-1 text-sm font-bold text-amber-700">Auto-submitted when time expired.</p>}
           {!released && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Submitted. Your teacher will publish the results — scores are hidden for now.</p>}
           {released && <>
+            {r.pending_manual === true && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Some descriptive answers are still awaiting manual grading — the score below is not final yet. It will update once your teacher grades them.</p>}
             <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div className="rounded-2xl bg-brand-tint p-3"><b className="text-xl">{String(r.score ?? "—")} / {String(r.max_marks ?? "")}</b><span className="block text-xs font-bold text-slate-500">Score</span></div>
+              <div className="rounded-2xl bg-brand-tint p-3"><b className="text-xl">{String(r.score ?? "—")} / {String(r.max_marks ?? "")}</b><span className="block text-xs font-bold text-slate-500">Score{r.pending_manual === true ? " (provisional)" : ""}</span></div>
               <div className="rounded-2xl bg-slate-50 p-3"><b className="text-xl">{String(r.percentage ?? "—")}%</b><span className="block text-xs font-bold text-slate-500">Percentage</span></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><b className="text-xl">{r.passed ? "Passed ✓" : "Failed"}</b><span className="block text-xs font-bold text-slate-500">Result</span></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><b className="text-xl">{r.passed ? "Passed ✓" : "Failed"}</b><span className="block text-xs font-bold text-slate-500">Result{r.pending_manual === true ? " (provisional)" : ""}</span></div>
               <div className="rounded-2xl bg-slate-50 p-3"><b className="text-xl">{fmtClock(n(r, "time_taken_seconds"))}</b><span className="block text-xs font-bold text-slate-500">Time taken</span></div>
             </div>
+            {(r.auto_score !== undefined || r.manual_score !== undefined) && <p className="mt-2 text-xs text-slate-500">Auto-scored (MCQ): {String(r.auto_score ?? 0)} · Manually graded (descriptive): {String(r.manual_score ?? 0)}{r.pending_manual === true ? " · some descriptive answers still awaiting grading" : ""}</p>}
             {review.length > 0 && <div className="mt-5 space-y-3">
               <h4 className="font-extrabold">Question-wise review</h4>
               {review.map((q, i) => {
+                if (s(q, "question_type") === "descriptive") {
+                  const pending = q.pending_manual === true;
+                  return <div key={s(q, "question_id")} className="rounded-2xl border p-4">
+                    <p className="text-sm font-bold">Q{i + 1}. {s(q, "question_text")} <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800">Descriptive</span></p>
+                    <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm">{s(q, "answer_text") || "(No answer written.)"}</p>
+                    <p className="mt-2 text-xs font-semibold text-slate-500">{pending ? "Awaiting grading — marks will appear here once your teacher grades this answer." : `Marks: ${String(q.manual_marks ?? 0)} / ${String(q.marks ?? "")}`}</p>
+                    {q.explanation ? <p className="mt-1 rounded-lg bg-amber-50 p-2 text-sm"><b>Model answer:</b> {s(q, "explanation")}</p> : null}
+                  </div>;
+                }
                 const correctAns = (q.correct_answers as string[]) || [];
                 return <div key={s(q, "question_id")} className="rounded-2xl border p-4">
                   <p className="text-sm font-bold">Q{i + 1}. {s(q, "question_text")}</p>
@@ -894,9 +1064,10 @@ export default function TestModule(props: TestModuleProps) {
     <div className="rounded-2xl border p-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2"><label className="label">Question *</label><textarea required className="input" rows={3} value={qForm.question_text} onChange={e => setQForm({ ...qForm, question_text: e.target.value })} placeholder="Type the question…" /></div>
-        <div><label className="label">Type</label><select className="input" value={qForm.question_type} onChange={e => setQForm({ ...qForm, question_type: e.target.value as "single" | "multiple", correct: [] })}><option value="single">Single correct answer</option><option value="multiple">Multiple correct answers</option></select></div>
+        <div><label className="label">Type</label><select className="input" value={qForm.question_type} onChange={e => setQForm({ ...qForm, question_type: e.target.value as QType, correct: [] })}><option value="single">Single correct answer</option><option value="multiple">Multiple correct answers</option><option value="descriptive">Descriptive / essay (manually graded)</option></select></div>
         <div><label className="label">Difficulty</label><select className="input" value={qForm.difficulty} onChange={e => setQForm({ ...qForm, difficulty: e.target.value })}>{DIFFICULTIES.map(d => <option key={d} value={d}>{d}</option>)}</select></div>
-        {qForm.options.map((o, i) => (
+        {qForm.question_type === "descriptive" && <p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-800 sm:col-span-2">Descriptive questions have no options and no correct answer. Students write free text, it scores 0 automatically, and you grade it by hand against the model answer below after they submit.</p>}
+        {qForm.question_type !== "descriptive" && qForm.options.map((o, i) => (
           <div key={o.label}><label className="label">Option {o.label} {qForm.correct.includes(o.label) ? "· correct ✓" : ""}</label>
             <div className="flex gap-2">
               <input className="input flex-1" value={o.text} onChange={e => { const opts = qForm.options.map((x, j) => j === i ? { ...x, text: e.target.value } : x); setQForm({ ...qForm, options: opts }); }} placeholder={`Option ${o.label}`} />
@@ -905,10 +1076,10 @@ export default function TestModule(props: TestModuleProps) {
           </div>
         ))}
         <div><label className="label">Marks</label><input type="number" min="0" step="0.5" className="input" value={qForm.marks} onChange={e => setQForm({ ...qForm, marks: Number(e.target.value) || 0 })} /></div>
-        <div><label className="label">Negative marks (per wrong answer)</label><input type="number" min="0" step="0.25" className="input" value={qForm.negative_marks} onChange={e => setQForm({ ...qForm, negative_marks: Number(e.target.value) || 0 })} /></div>
+        {qForm.question_type !== "descriptive" && <div><label className="label">Negative marks (per wrong answer)</label><input type="number" min="0" step="0.25" className="input" value={qForm.negative_marks} onChange={e => setQForm({ ...qForm, negative_marks: Number(e.target.value) || 0 })} /></div>}
         <div><label className="label">Subject</label><input className="input" value={qForm.subject} onChange={e => setQForm({ ...qForm, subject: e.target.value })} placeholder="e.g. Mathematics" /></div>
         <div><label className="label">Topic / Chapter</label><input className="input" value={qForm.topic} onChange={e => setQForm({ ...qForm, topic: e.target.value })} placeholder="e.g. Algebra" /></div>
-        <div className="sm:col-span-2"><label className="label">Explanation (shown in results when allowed)</label><textarea className="input" rows={2} value={qForm.explanation} onChange={e => setQForm({ ...qForm, explanation: e.target.value })} placeholder="Why is this the right answer?" /></div>
+        <div className="sm:col-span-2"><label className="label">{qForm.question_type === "descriptive" ? "Model answer / grading guidance (teacher only)" : "Explanation (shown in results when allowed)"}</label><textarea className="input" rows={2} value={qForm.explanation} onChange={e => setQForm({ ...qForm, explanation: e.target.value })} placeholder={qForm.question_type === "descriptive" ? "What should a full-marks answer cover? This is never shown to students before grading, and only in results if the test's “Show explanations” is on." : "Why is this the right answer?"} /></div>
         <label className="flex items-center gap-2 text-sm font-bold sm:col-span-2"><input type="checkbox" checked={qForm.saveToBank !== false} onChange={e => setQForm({ ...qForm, saveToBank: e.target.checked })} /> Save this question to the Question Bank for reuse</label>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -918,8 +1089,13 @@ export default function TestModule(props: TestModuleProps) {
       </div>
       {qPreview && qForm.question_text && <div className="mt-3 rounded-2xl bg-slate-50 p-4">
         <p className="text-sm font-bold">{qForm.question_text}</p>
-        <ul className="mt-2 space-y-1 text-sm">{qForm.options.filter(o => o.text.trim()).map(o => <li key={o.label} className={qForm.correct.includes(o.label) ? "font-bold text-emerald-700" : ""}>{o.label}. {o.text}{qForm.correct.includes(o.label) ? " ✓" : ""}</li>)}</ul>
-        {qForm.explanation && <p className="mt-2 text-sm text-slate-600"><b>Explanation:</b> {qForm.explanation}</p>}
+        {qForm.question_type === "descriptive" ? <>
+          <p className="mt-2 rounded-xl border-2 border-dashed border-slate-300 bg-white p-3 text-sm text-slate-400">Student writes their answer here… ({qForm.marks} marks, manually graded)</p>
+          {qForm.explanation && <p className="mt-2 text-sm text-slate-600"><b>Model answer (teacher only):</b> {qForm.explanation}</p>}
+        </> : <>
+          <ul className="mt-2 space-y-1 text-sm">{qForm.options.filter(o => o.text.trim()).map(o => <li key={o.label} className={qForm.correct.includes(o.label) ? "font-bold text-emerald-700" : ""}>{o.label}. {o.text}{qForm.correct.includes(o.label) ? " ✓" : ""}</li>)}</ul>
+          {qForm.explanation && <p className="mt-2 text-sm text-slate-600"><b>Explanation:</b> {qForm.explanation}</p>}
+        </>}
       </div>}
     </div>
   );
@@ -929,7 +1105,7 @@ export default function TestModule(props: TestModuleProps) {
     return (
       <div className="rounded-2xl border p-4">
         <p className="text-sm font-bold">Bulk import — CSV, Excel (.xlsx) or JSON</p>
-        <p className="mt-1 text-xs text-slate-500">Columns: question, option_a, option_b, option_c, option_d, correct_answer (A–D), explanation, marks, negative_marks, difficulty (Easy/Medium/Hard), subject, topic. Only valid rows are imported — invalid rows are listed below, never silently skipped.</p>
+        <p className="mt-1 text-xs text-slate-500">Columns: question, question_type (single / multiple / descriptive), option_a, option_b, option_c, option_d, correct_answer (A–D), explanation, marks, negative_marks, difficulty (Easy/Medium/Hard), subject, topic. Descriptive rows need no options and no correct_answer — put the model answer / grading guidance in explanation instead. Only valid rows are imported — invalid rows are listed below, never silently skipped.</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={() => downloadText("sample-questions.csv", SAMPLE_CSV)} className="app-press rounded-xl border px-4 py-2.5 text-sm font-bold"><Download className="mr-1 inline h-4 w-4" />Sample CSV template</button>
           <label className="app-press cursor-pointer rounded-xl border px-4 py-2.5 text-sm font-bold"><FileUp className="mr-1 inline h-4 w-4" />Choose file…<input type="file" accept=".csv,.json,.xlsx,.xls" className="hidden" onChange={e => { void onImportFile(e.target.files?.[0], target); e.target.value = ""; }} /></label>
@@ -941,7 +1117,7 @@ export default function TestModule(props: TestModuleProps) {
           <div className="mt-2 max-h-72 space-y-2 overflow-y-auto">
             {importRows.map((r, i) => <div key={i} className={`rounded-xl border p-3 text-sm ${r.errors.length ? "border-red-200 bg-red-50" : "border-emerald-200 bg-emerald-50"}`}>
               <p className="font-bold">{r.row.question || "(empty question)"}</p>
-              {r.errors.length ? <p className="mt-1 text-xs font-semibold text-red-700">{r.errors.join(" ")}</p> : <p className="mt-1 text-xs text-slate-500">{r.row.option_a} / {r.row.option_b} / {r.row.option_c} / {r.row.option_d} · Correct: {r.row.correct_answer} · {r.row.marks} marks</p>}
+              {r.errors.length ? <p className="mt-1 text-xs font-semibold text-red-700">{r.errors.join(" ")}</p> : <p className="mt-1 text-xs text-slate-500">{r.draft?.question_type === "descriptive" ? `Descriptive · manually graded · ${r.row.marks} marks` : `${r.row.option_a} / ${r.row.option_b} / ${r.row.option_c} / ${r.row.option_d} · Correct: ${r.row.correct_answer} · ${r.row.marks} marks`}</p>}
             </div>)}
           </div>
           <button onClick={() => void importValid(target)} disabled={!valid || importBusy} className="btn-brand mt-3 !py-2.5 text-sm disabled:opacity-40">Import {valid} valid question{valid === 1 ? "" : "s"}{target === "bank" ? " into the bank" : " into this test"}</button>
@@ -960,7 +1136,7 @@ export default function TestModule(props: TestModuleProps) {
         <select className="input" value={bankSubject} onChange={e => setBankSubject(e.target.value)}><option value="">All subjects</option>{bankSubjects.map(x => <option key={x} value={x}>{x}</option>)}</select>
         <select className="input" value={bankTopic} onChange={e => setBankTopic(e.target.value)}><option value="">All topics</option>{bankTopics.map(x => <option key={x} value={x}>{x}</option>)}</select>
         <select className="input" value={bankDifficulty} onChange={e => setBankDifficulty(e.target.value)}><option value="">Any difficulty</option>{DIFFICULTIES.map(d => <option key={d} value={d}>{d}</option>)}</select>
-        <select className="input" value={bankType} onChange={e => setBankType(e.target.value)}><option value="">Any type</option><option value="single">Single correct</option><option value="multiple">Multiple correct</option></select>
+        <select className="input" value={bankType} onChange={e => setBankType(e.target.value)}><option value="">Any type</option><option value="single">Single correct</option><option value="multiple">Multiple correct</option><option value="descriptive">Descriptive / essay</option></select>
       </div>
       <p className="mt-2 text-xs text-slate-500">{bankFiltered.length} question{bankFiltered.length === 1 ? "" : "s"} · {bankSelected.size} selected</p>
       <div className="mt-2 max-h-96 space-y-2 overflow-y-auto">
@@ -971,7 +1147,7 @@ export default function TestModule(props: TestModuleProps) {
           return <button key={id} onClick={() => setBankSelected(prev => { const next = new Set(prev); if (on) next.delete(id); else next.add(id); return next; })} className={`app-press flex w-full items-start gap-3 rounded-2xl border-2 p-3 text-left ${on ? "border-brand bg-brand-tint" : "border-slate-200 bg-white"}`}>
             <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 ${on ? "border-brand bg-brand text-white" : "border-slate-300 bg-white"}`}>{on && <Check className="h-3.5 w-3.5" />}</span>
             <span className="min-w-0 flex-1"><span className="block text-sm font-bold">{s(b, "question_text")}</span>
-            <span className="mt-0.5 block text-xs text-slate-500">{s(b, "subject")} {s(b, "topic") ? `· ${s(b, "topic")}` : ""} · {s(b, "difficulty")} · {n(b, "marks")} marks · {s(b, "question_type") === "multiple" ? "Multiple correct" : "Single correct"}</span></span>
+            <span className="mt-0.5 block text-xs text-slate-500">{s(b, "subject")} {s(b, "topic") ? `· ${s(b, "topic")}` : ""} · {s(b, "difficulty")} · {n(b, "marks")} marks · {Q_TYPE_LABEL[(s(b, "question_type") || "single") as QType]}</span></span>
           </button>;
         })}
       </div>
@@ -991,7 +1167,7 @@ export default function TestModule(props: TestModuleProps) {
       <div>
         <div className="card mt-3 !p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div><h3 className="font-extrabold">Tests &amp; Assessments</h3><p className="text-sm text-slate-600">Create MCQ exams, reuse the question bank, publish to your batches, and see results.</p></div>
+            <div><h3 className="font-extrabold">Tests &amp; Assessments</h3><p className="text-sm text-slate-600">Create MCQ and descriptive exams, reuse the question bank, publish to your batches, grade written answers, and see results.</p></div>
             <button onClick={() => { setTab("create"); startWizard(); }} className="btn-brand !py-2.5 text-sm"><Plus className="mr-1 inline h-4 w-4" />Create test</button>
           </div>
           <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Test sections">
@@ -1044,7 +1220,7 @@ export default function TestModule(props: TestModuleProps) {
                       <p className="text-sm font-bold">Q{i + 1}. {q.question_text}</p>
                       <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold">{q.marks} marks</span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">{q.subject} {q.topic ? `· ${q.topic}` : ""} · {q.difficulty} · {q.question_type === "multiple" ? "Multiple correct" : "Single correct"} · Correct: {q.correct.join(", ")}{q.saveToBank ? " · saved to bank" : ""}</p>
+                    <p className="mt-1 text-xs text-slate-500">{q.subject} {q.topic ? `· ${q.topic}` : ""} · {q.difficulty} · {Q_TYPE_LABEL[q.question_type]}{q.question_type !== "descriptive" ? ` · Correct: ${q.correct.join(", ")}` : ""}{q.saveToBank ? " · saved to bank" : ""}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <button onClick={() => editQ(q)} className="rounded-lg border px-2.5 py-1.5 text-xs font-bold"><Pencil className="mr-1 inline h-3.5 w-3.5" />Edit</button>
                       <button onClick={() => dupQ(q)} className="rounded-lg border px-2.5 py-1.5 text-xs font-bold">Duplicate</button>
@@ -1179,7 +1355,7 @@ export default function TestModule(props: TestModuleProps) {
             <div className="mt-3 space-y-2">
               {bankFiltered.map(b => <div key={s(b, "id")} className="rounded-2xl border p-3">
                 <p className="text-sm font-bold">{s(b, "question_text")}</p>
-                <p className="mt-0.5 text-xs text-slate-500">{s(b, "subject")} {s(b, "topic") ? `· ${s(b, "topic")}` : ""} · {s(b, "difficulty")} · {n(b, "marks")} marks · Correct: {((Array.isArray(b.correct_answers) ? b.correct_answers : []) as string[]).join(", ")}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{s(b, "subject")} {s(b, "topic") ? `· ${s(b, "topic")}` : ""} · {s(b, "difficulty")} · {n(b, "marks")} marks · {s(b, "question_type") === "descriptive" ? "Descriptive · manually graded" : `Correct: ${((Array.isArray(b.correct_answers) ? b.correct_answers : []) as string[]).join(", ")}`}</p>
                 <div className="mt-2 flex gap-2">
                   <button onClick={() => { const d = bankToDraft(b); setQForm(d); setBankEditing(s(b, "id")); setShowBankEditor(true); }} className="rounded-lg border px-2.5 py-1.5 text-xs font-bold"><Pencil className="mr-1 inline h-3.5 w-3.5" />Edit</button>
                   <button onClick={() => void deleteBankQuestion(s(b, "id"))} className="rounded-lg border px-2.5 py-1.5 text-xs font-bold text-red-700"><Trash2 className="mr-1 inline h-3.5 w-3.5" />Remove</button>
@@ -1221,14 +1397,46 @@ export default function TestModule(props: TestModuleProps) {
               </div>
               {notAttempted.length > 0 && <p className="mt-3 text-sm text-slate-600"><b>Not attempted ({notAttempted.length}):</b> {notAttempted.map(nameOf).join(", ")}</p>}
               <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[640px] text-left text-sm">
-                  <thead><tr className="text-xs uppercase tracking-wide text-slate-400"><th className="py-2">Student</th><th>Score</th><th>%</th><th>Time</th><th>Result</th><th>Submitted</th></tr></thead>
-                  <tbody>{atts.length === 0 ? <tr><td colSpan={6} className="py-3 text-slate-500">No attempts yet.</td></tr> : atts.map(a => <tr key={s(a, "attempt_id")} className="border-t"><td className="py-2 font-bold">{nameOf(s(a, "student_id"))}</td><td>{String(a.score)} / {String(a.max_marks)}</td><td>{String(a.percentage)}%</td><td>{fmtClock(n(a, "time_taken_seconds"))}</td><td><span className={`rounded-full px-2 py-0.5 text-xs font-extrabold ${a.passed ? "bg-brand-tint text-brand-dark" : "bg-red-100 text-red-700"}`}>{a.passed ? "Pass" : "Fail"}</span></td><td className="text-xs text-slate-500">{s(a, "submitted_at") ? new Date(s(a, "submitted_at")).toLocaleString() : "—"}</td></tr>)}</tbody>
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead><tr className="text-xs uppercase tracking-wide text-slate-400"><th className="py-2">Student</th><th>Score</th><th>%</th><th>Time</th><th>Result</th><th>Grading</th><th>Submitted</th></tr></thead>
+                  <tbody>{atts.length === 0 ? <tr><td colSpan={7} className="py-3 text-slate-500">No attempts yet.</td></tr> : atts.map(a => <tr key={s(a, "attempt_id")} className="border-t"><td className="py-2 font-bold">{nameOf(s(a, "student_id"))}</td><td>{String(a.score)} / {String(a.max_marks)}</td><td>{String(a.percentage)}%</td><td>{fmtClock(n(a, "time_taken_seconds"))}</td><td><span className={`rounded-full px-2 py-0.5 text-xs font-extrabold ${a.passed ? "bg-brand-tint text-brand-dark" : "bg-red-100 text-red-700"}`}>{a.passed ? "Pass" : "Fail"}</span></td><td>{a.manual_grading_pending ? <span className="mr-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-extrabold text-amber-800">Needs grading</span> : <span className="mr-2 text-xs text-slate-400">—</span>}<button onClick={() => void loadGrading(resTestId, s(a, "attempt_id"))} className="rounded-lg border px-2 py-1 text-xs font-bold">Grade</button></td><td className="text-xs text-slate-500">{s(a, "submitted_at") ? new Date(s(a, "submitted_at")).toLocaleString() : "—"}</td></tr>)}</tbody>
                 </table>
               </div>
+              {gradingAttemptId && <div className="mt-5 rounded-2xl border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="font-extrabold">Manual grading — {nameOf(s(gradingData, "student_id"))}{gradingData ? ` · Attempt ${String(gradingData.attempt_number)} · ${String(gradingData.score)} / ${String(gradingData.max_marks)} so far` : ""}</h4>
+                  <button onClick={() => { setGradingAttemptId(""); setGradingData(null); }} className="app-press flex h-9 w-9 items-center justify-center rounded-xl border" aria-label="Close grading"><X className="h-5 w-5" /></button>
+                </div>
+                {gradeBusy && !gradingData && <p className="mt-2 text-sm font-bold text-brand-dark">Loading attempt…</p>}
+                {gradingData && (() => {
+                  const gAnswers = (gradingData.answers as Row[]) || [];
+                  const answered = gAnswers.filter(a => s(a, "answer_text").trim() !== "");
+                  if (!gAnswers.length) return <p className="mt-2 text-sm text-slate-500">This test has no descriptive questions.</p>;
+                  if (!answered.length) return <p className="mt-2 text-sm text-slate-500">The student left every descriptive question blank — nothing to grade.</p>;
+                  return <div className="mt-3 space-y-3">
+                    {gradingData.manual_grading_pending === true && <p className="rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">This attempt is awaiting manual grading — its total is not final until every answer below has marks.</p>}
+                    {answered.map((a, i) => {
+                      const qid = s(a, "question_id");
+                      const maxM = n(a, "marks") || 1;
+                      const graded = a.manual_marks !== null && a.manual_marks !== undefined;
+                      return <div key={qid} className="rounded-2xl border p-4">
+                        <p className="text-sm font-bold">Q{i + 1}. {s(a, "question_text")} <span className="ml-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold">{maxM} marks</span></p>
+                        <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm">{s(a, "answer_text")}</p>
+                        {s(a, "model_answer") && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-sm"><b>Model answer / guidance:</b> {s(a, "model_answer")}</p>}
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <label className="text-sm font-bold">Marks (0–{maxM})</label>
+                          <input type="number" min="0" max={maxM} step="0.5" className="input !w-24" value={gradeMarks[qid] ?? ""} onChange={e => setGradeMarks({ ...gradeMarks, [qid]: e.target.value })} placeholder="0" />
+                          <button onClick={() => void saveGrade(qid, maxM)} disabled={gradeBusy} className="btn-brand !py-2 text-xs disabled:opacity-40">{gradeBusy ? "Saving…" : graded ? "Update grade" : "Save grade"}</button>
+                          {graded && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-extrabold text-emerald-700">Graded: {String(a.manual_marks)} / {maxM}</span>}
+                        </div>
+                      </div>;
+                    })}
+                  </div>;
+                })()}
+              </div>}
               <h4 className="mt-5 font-extrabold">Question-wise accuracy</h4>
               <div className="mt-2 space-y-2">
-                {qStats.map((q, i) => <div key={s(q, "question_id")}><p className="text-sm"><b>Q{i + 1}.</b> {s(q, "question_text")}</p><div className="mt-1 flex items-center gap-2"><div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${n(q, "accuracy") || 0}%` }} /></div><span className="text-xs font-bold">{q.accuracy === null ? "—" : `${String(q.accuracy)}%`} ({String(q.correct)}/{String(q.attempted)} correct)</span></div></div>)}
+                {qStats.map((q, i) => <div key={s(q, "question_id")}><p className="text-sm"><b>Q{i + 1}.</b> {s(q, "question_text")}</p>{s(q, "question_type") === "descriptive" ? <p className="mt-1 text-xs font-bold text-amber-800">Descriptive — manually graded · {String(q.attempted)} answer{String(q.attempted) === "1" ? "" : "s"} written</p> : <div className="mt-1 flex items-center gap-2"><div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${n(q, "accuracy") || 0}%` }} /></div><span className="text-xs font-bold">{q.accuracy === null ? "—" : `${String(q.accuracy)}%`} ({String(q.correct)}/{String(q.attempted)} correct)</span></div>}</div>)}
               </div>
             </div>;
           })()}
@@ -1238,7 +1446,6 @@ export default function TestModule(props: TestModuleProps) {
   }
 
   // ---------- Student view ----------
-  const [stuTab, setStuTab] = useState<"available" | "upcoming" | "completed" | "results">("available");
   const listFor = stuTab === "available"
     ? studentTests.filter(x => !x.submitted && !x.upcoming)
     : stuTab === "upcoming"
@@ -1299,7 +1506,7 @@ export default function TestModule(props: TestModuleProps) {
             {attempts.filter(a => s(a, "status") === "submitted" || s(a, "status") === "expired").map(a => {
               const t = tests.find(x => s(x, "id") === s(a, "test_id"));
               return <li key={s(a, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm">
-                <span><b>{t ? s(t, "title") : "Test"}</b> — {String(a.score ?? "—")} / {String(a.max_marks ?? "")} ({String(a.percentage ?? "—")}%) · {a.passed ? "Passed ✓" : "Failed"} · {fmtClock(n(a, "time_taken_seconds"))}</span>
+                <span><b>{t ? s(t, "title") : "Test"}</b> — {String(a.score ?? "—")} / {String(a.max_marks ?? "")} ({String(a.percentage ?? "—")}%) · {a.passed ? "Passed ✓" : "Failed"} · {fmtClock(n(a, "time_taken_seconds"))}{a.manual_grading_pending ? <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800">Awaiting grading</span> : null}</span>
                 <button onClick={() => void loadMyResult(s(a, "test_id"))} className="font-bold text-brand-dark underline">View details →</button>
               </li>;
             })}

@@ -1,10 +1,15 @@
-// POST /api/tests/answer { attempt_id, question_id, selected: string[] }
+// POST /api/tests/answer { attempt_id, question_id, selected: string[], answer_text?: string }
 // Autosave for one answer. Validates ownership, in-progress status and the
-// server deadline. Only the student's selection is stored — marks are never
-// computed or accepted from the client.
+// server deadline. Only the student's selection / typed text is stored —
+// marks are never computed or accepted from the client. Descriptive
+// (essay) questions are saved as answer_text (selected is ignored and
+// stored empty); MCQ questions keep the previous selected[] behaviour and
+// any answer_text sent for them is ignored.
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getAuth, s, type Row } from "../lib";
+
+const MAX_ANSWER_TEXT = 10000;
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,7 +17,7 @@ export async function POST(request: NextRequest) {
     const auth = await getAuth(supabase);
     if (!auth?.user || !auth.profile) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
     const studentId = s(auth.profile, "id");
-    const { attempt_id, question_id, selected } = await request.json().catch(() => ({}));
+    const { attempt_id, question_id, selected, answer_text } = await request.json().catch(() => ({}));
     if (!attempt_id || !question_id || !Array.isArray(selected)) {
       return NextResponse.json({ error: "attempt_id, question_id and selected[] are required." }, { status: 400 });
     }
@@ -25,13 +30,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Time expired — submit the attempt." }, { status: 410 });
     }
     // The question must belong to this attempt's test.
-    const { data: q } = await supabase.from("test_questions").select("id,test_id").eq("id", question_id).single();
+    const { data: q } = await supabase.from("test_questions").select("id,test_id,question_type").eq("id", question_id).single();
     if (!q || s(q, "test_id") !== s(a, "test_id")) return NextResponse.json({ error: "Question does not belong to this test." }, { status: 400 });
-    const clean = [...new Set(selected.map(String))].slice(0, 10);
-    const { error } = await supabase.from("student_answers").upsert(
-      { attempt_id, question_id, selected: clean, answered_at: new Date().toISOString() },
-      { onConflict: "attempt_id,question_id" }
-    );
+    const isDescriptive = s(q, "question_type") === "descriptive";
+    const text = isDescriptive ? String(answer_text ?? "").slice(0, MAX_ANSWER_TEXT) : "";
+    const clean = isDescriptive ? [] : [...new Set(selected.map(String))].slice(0, 10);
+    // answer_text is only written for descriptive questions, so MCQ autosave
+    // keeps working even before the add-test-descriptive.sql migration runs.
+    const row: Record<string, unknown> = { attempt_id, question_id, selected: clean, answered_at: new Date().toISOString() };
+    if (isDescriptive) row.answer_text = text;
+    const { error } = await supabase.from("student_answers").upsert(row, { onConflict: "attempt_id,question_id" });
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

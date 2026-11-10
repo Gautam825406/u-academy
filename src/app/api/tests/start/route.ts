@@ -45,11 +45,11 @@ export async function POST(request: NextRequest) {
       const qOrder = (Array.isArray(live.question_order) ? live.question_order : []) as string[];
       const oOrders = (live.option_orders as Record<string, string[]>) || {};
       const ordered = orderQuestions(qs, qOrder);
-      const { data: saved } = await supabase.from("student_answers").select("question_id,selected").eq("attempt_id", s(live, "id"));
+      const { data: saved } = await supabase.from("student_answers").select("question_id,selected,answer_text").eq("attempt_id", s(live, "id"));
       return NextResponse.json({
         attempt: { id: s(live, "id"), expires_at: s(live, "expires_at"), attempt_number: n(live, "attempt_number"), started_at: s(live, "started_at") },
         questions: ordered.map(q => stripQuestion(q, oOrders[s(q, "id")])),
-        saved_answers: ((saved as Row[]) || []).map(a => ({ question_id: s(a, "question_id"), selected: (Array.isArray(a.selected) ? a.selected : []).map(String) })),
+        saved_answers: ((saved as Row[]) || []).map(a => ({ question_id: s(a, "question_id"), selected: (Array.isArray(a.selected) ? a.selected : []).map(String), answer_text: s(a, "answer_text") })),
         resumed: true,
       });
     }

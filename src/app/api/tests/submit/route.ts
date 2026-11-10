@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
           score: n(a, "score"), max_marks: n(a, "max_marks"),
           percentage: n(a, "percentage"), passed: a.passed === true,
           time_taken_seconds: n(a, "time_taken_seconds"),
+          pending_manual: a.manual_grading_pending === true,
         },
       });
     }
@@ -38,12 +39,16 @@ export async function POST(request: NextRequest) {
     const expired = !!(s(a, "expires_at") && now > new Date(s(a, "expires_at")));
     const { data: questions } = await supabase.from("test_questions").select("*").eq("test_id", s(a, "test_id")).order("sort_order", { ascending: true });
     const qs = (questions as Row[]) || [];
-    const { data: answers } = await supabase.from("student_answers").select("question_id,selected").eq("attempt_id", attempt_id);
+    const { data: answers } = await supabase.from("student_answers").select("question_id,selected,answer_text").eq("attempt_id", attempt_id);
     const ansMap = new Map<string, string[]>();
+    const textMap = new Map<string, string>();
     for (const r of (answers as Row[]) || []) {
       ansMap.set(s(r, "question_id"), (Array.isArray(r.selected) ? r.selected : []).map(String));
+      textMap.set(s(r, "question_id"), s(r, "answer_text"));
     }
-    const { score, maxMarks, correct, incorrect, unattempted, perQuestion } = scoreAttempt(qs, ansMap);
+    // Descriptive answers score 0 automatically and flag the attempt as
+    // awaiting manual grading; the score below is the auto-scored part only.
+    const { score, maxMarks, correct, incorrect, unattempted, pendingManual, perQuestion } = scoreAttempt(qs, ansMap, textMap);
     const startedAt = s(a, "started_at") ? new Date(s(a, "started_at")) : now;
     const timeTaken = Math.max(0, Math.round((now.getTime() - startedAt.getTime()) / 1000));
     const percentage = maxMarks > 0 ? Math.round((score / maxMarks) * 1000) / 10 : 0;
@@ -59,11 +64,12 @@ export async function POST(request: NextRequest) {
     const { error } = await supabase.from("test_attempts").update({
       status: finalStatus, submitted_at: now.toISOString(),
       score, max_marks: maxMarks, percentage, passed, time_taken_seconds: timeTaken,
+      manual_grading_pending: pendingManual > 0,
     }).eq("id", attempt_id);
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({
       ok: true, expired,
-      result: { score, max_marks: maxMarks, percentage, passed, time_taken_seconds: timeTaken, correct, incorrect, unattempted },
+      result: { score, max_marks: maxMarks, percentage, passed, time_taken_seconds: timeTaken, correct, incorrect, unattempted, pending_manual: pendingManual > 0, pending_manual_count: pendingManual },
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not submit the test." }, { status: 500 });

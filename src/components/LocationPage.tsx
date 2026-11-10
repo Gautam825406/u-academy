@@ -17,7 +17,7 @@ export default function LocationPage({ loc }: { loc: LocationContent }) {
       <main>
         <section className="mx-auto max-w-6xl px-5 py-10">
           <p className="text-xs font-extrabold uppercase tracking-widest text-brand">Coaching · Classes 6–12 · {loc.name}, Jharkhand</p>
-          <h1 className="mt-2 text-4xl font-extrabold leading-tight md:text-5xl">
+          <h1 className="mt-2 text-3xl font-extrabold leading-tight sm:text-4xl md:text-5xl">
             Coaching Classes in {loc.name} — U++ Academy
           </h1>
           <p className="mt-4 max-w-3xl text-lg text-slate-600">{loc.intro}</p>

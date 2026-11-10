@@ -116,9 +116,6 @@ export default function DashboardPage() {
   const [subAns, setSubAns] = useState<Record<string, string>>({});
   const [subFile, setSubFile] = useState<Record<string, string>>({});
   const [grade, setGrade] = useState<Record<string, { marks: string; feedback: string }>>({});
-  const [testStu, setTestStu] = useState<Record<string, string>>({});
-  const [testMarks, setTestMarks] = useState<Record<string, string>>({});
-  const [testRem, setTestRem] = useState<Record<string, string>>({});
   const [attBatch, setAttBatch] = useState("");
   const [attDate, setAttDate] = useState(new Date().toISOString().slice(0, 10));
   const [attMarks, setAttMarks] = useState<Record<string, string>>({});
@@ -196,6 +193,9 @@ export default function DashboardPage() {
   const [noteSaved, setNoteSaved] = useState("");
   const [noteBusy, setNoteBusy] = useState(false);
   const playerRef = useRef<any>(null);
+  // Monotonic load token (stale-list fix): only the latest loadAll() run
+  // may commit its snapshot — see loadAll below.
+  const loadTokenRef = useRef(0);
   const playerWrapRef = useRef<HTMLDivElement | null>(null);
   const timeRef = useRef(0);
 
@@ -340,30 +340,39 @@ export default function DashboardPage() {
   // catalogue, so all roles read them (needed to browse and buy).
   async function loadAll() {
     if (!profile) return;
+    // Load token: two overlapping loadAll() calls used to race, and the
+    // older snapshot could overwrite the newer one. Only the latest run
+    // may commit its results (guard at the end of this function). Declared
+    // outside try so the finally block can see it.
+    const loadToken = ++loadTokenRef.current;
     setDataLoading(true);
     try {
     const role = profile.role;
-    const out: Record<string, Row[]> = {};
+    // Seed from the current data: a failed query below leaves the previous
+    // list in place instead of silently replacing a good list with [] —
+    // the likely root cause of lists flashing "nothing yet" right after a
+    // save until a manual reload.
+    const out: Record<string, Row[]> = { ...data };
     const fetchAll = async (t: string) => {
-      const { data: d } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
-      out[t] = (d as Row[]) || [];
+      const { data: d, error } = await supabase.from(t).select("*").order("created_at", { ascending: false }).limit(200);
+      if (!error) out[t] = (d as Row[]) || [];
     };
     const fetchEq = async (t: string, col: string, val: string) => {
-      const { data: d } = await supabase.from(t).select("*").eq(col, val).order("created_at", { ascending: false }).limit(200);
-      out[t] = (d as Row[]) || [];
+      const { data: d, error } = await supabase.from(t).select("*").eq(col, val).order("created_at", { ascending: false }).limit(200);
+      if (!error) out[t] = (d as Row[]) || [];
     };
     const fetchIn = async (t: string, col: string, vals: string[]) => {
       if (!vals.length) { out[t] = []; return; }
-      const { data: d } = await supabase.from(t).select("*").in(col, vals).order("created_at", { ascending: false }).limit(200);
-      out[t] = (d as Row[]) || [];
+      const { data: d, error } = await supabase.from(t).select("*").in(col, vals).order("created_at", { ascending: false }).limit(200);
+      if (!error) out[t] = (d as Row[]) || [];
     };
     // Profiles are needed for names (teachers, classmates in a forum).
     // Only id/name/role/class/subject are fetched for non-admins.
     if (role === "admin") {
       await fetchAll("profiles");
     } else {
-      const { data: d } = await supabase.from("profiles").select("id,full_name,email,role,class_label,board,subject,child_name,child_student_id").order("created_at", { ascending: false }).limit(200);
-      out.profiles = (d as Row[]) || [];
+      const { data: d, error: profError } = await supabase.from("profiles").select("id,full_name,email,role,class_label,board,subject,child_name,child_student_id").order("created_at", { ascending: false }).limit(200);
+      if (!profError) out.profiles = (d as Row[]) || [];
     }
     await fetchAll("batches");
     await fetchAll("batch_plans");
@@ -423,18 +432,22 @@ export default function DashboardPage() {
       await fetchIn("live_classes", "batch_id", activeIds);
       await fetchIn("timetable", "batch_id", activeIds);
       // Forum: questions in my batches + my own questions anywhere.
-      const { data: dq } = await supabase.from("doubt_questions").select("*").order("created_at", { ascending: false }).limit(200);
-      out.doubt_questions = ((dq as Row[]) || []).filter(q => activeIds.includes(s(q, "batch_id")) || s(q, "student_id") === eid);
+      const { data: dq, error: dqError } = await supabase.from("doubt_questions").select("*").order("created_at", { ascending: false }).limit(200);
+      if (!dqError) out.doubt_questions = ((dq as Row[]) || []).filter(q => activeIds.includes(s(q, "batch_id")) || s(q, "student_id") === eid);
       const qIds = (out.doubt_questions || []).map(q => s(q, "id"));
       await fetchIn("doubt_answers", "question_id", qIds);
       await fetchAll("doubt_votes");
       await fetchEq("doubts", "student_id", eid);
       out.enquiries = []; out.teacher_requests = []; out.onboarding_invites = [];
     }
-    setData(out);
-    setCounts({ batches: out.batches.length, lectures: out.lectures.length, assignments: out.assignments.length, tests: out.tests.length, fees: out.fees.length, doubts: (out.doubt_questions || []).filter(r => s(r, "status") === "open").length });
-    setPerms(out.role_permissions);
-    } finally { setDataLoading(false); }
+    // Only the latest load commits — a stale run that finishes after a
+    // newer one started drops its snapshot instead of overwriting it.
+    if (loadToken === loadTokenRef.current) {
+      setData(out);
+      setCounts({ batches: (out.batches || []).length, lectures: (out.lectures || []).length, assignments: (out.assignments || []).length, tests: (out.tests || []).length, fees: (out.fees || []).length, doubts: (out.doubt_questions || []).filter(r => s(r, "status") === "open").length });
+      setPerms(out.role_permissions || []);
+    }
+    } finally { if (loadToken === loadTokenRef.current) setDataLoading(false); }
   }
 
   const profiles = data.profiles || [];
@@ -594,7 +607,10 @@ export default function DashboardPage() {
     if (error) setMsg(error.message); else loadAll();
   }
   async function toggleBlock(row: Row) {
-    const { error } = await supabase.from("profiles").update({ is_blocked: !row.is_blocked }).eq("id", row.id as string);
+    const blocking = !row.is_blocked;
+    const who = s(row, "full_name") || s(row, "email") || "this user";
+    if (!window.confirm(blocking ? `Block ${who}? Their account will be marked Blocked in Users.` : `Unblock ${who}? Their account will be marked Active again.`)) return;
+    const { error } = await supabase.from("profiles").update({ is_blocked: blocking }).eq("id", row.id as string);
     if (error) setMsg(error.message); else loadAll();
   }
   // ---- generic create (batches/lectures/materials/assignments/tests/live_classes) ----
@@ -604,6 +620,7 @@ export default function DashboardPage() {
     const table = tableMap[section]; if (!table) return;
     const payload: Record<string, unknown> = { ...form };
     if (payload.total_marks) payload.total_marks = Number(payload.total_marks);
+    if (payload.duration_minutes !== undefined && payload.duration_minutes !== "") payload.duration_minutes = Number(payload.duration_minutes);
     if (payload.price !== undefined && payload.price !== "") payload.price = Number(payload.price);
     if (payload.capacity !== undefined && payload.capacity !== "") payload.capacity = Number(payload.capacity);
     if (payload.status === "") payload.status = "active";
@@ -612,8 +629,10 @@ export default function DashboardPage() {
     if (payload.starts_at) payload.starts_at = new Date(String(payload.starts_at)).toISOString();
     if (section === "live_classes" && !payload.status) payload.status = "scheduled";
     payload.created_by = profile?.id;
-    const { error } = await supabase.from(table).insert(payload);
-    if (error) setMsg(error.message); else { setForm({}); setMsg("Saved."); loadAll(); }
+    const { data: inserted, error } = await supabase.from(table).insert(payload).select().single();
+    // Optimistic merge: the new row appears instantly, before the reload
+    // finishes — a slow reload no longer leaves the list looking empty.
+    if (error) setMsg(error.message); else { if (inserted) setData(prev => ({ ...prev, [table]: [inserted as Row, ...(prev[table] || [])] })); setForm({}); setMsg("Saved."); loadAll(); }
   }
   // ---- Batch thumbnail upload (Admin only) ----
   // Uploads to the public 'batch-thumbnails' Storage bucket and returns the
@@ -696,8 +715,8 @@ export default function DashboardPage() {
   }
   async function enrol() {
     if (!enrolBatch || !enrolStudent) return setMsg("Pick a batch and a student to enrol.");
-    const { error } = await supabase.from("enrollments").insert({ batch_id: enrolBatch, student_id: enrolStudent });
-    if (error) setMsg(error.message); else { setMsg(`Enrolled ${nameOf(enrolStudent)} into ${batchName(enrolBatch)}.`); loadAll(); }
+    const { data: inserted, error } = await supabase.from("enrollments").insert({ batch_id: enrolBatch, student_id: enrolStudent }).select().single();
+    if (error) setMsg(error.message); else { if (inserted) setData(prev => ({ ...prev, enrollments: [inserted as Row, ...(prev.enrollments || [])] })); setMsg(`Enrolled ${nameOf(enrolStudent)} into ${batchName(enrolBatch)}.`); loadAll(); }
   }
   async function createPlan(e: React.FormEvent) {
     e.preventDefault(); setMsg("");
@@ -792,8 +811,12 @@ export default function DashboardPage() {
     } finally { setPayBusy(""); }
   }
   async function unenrol(batchId: string, studentId: string) {
+    // This deletes ONLY the enrolment row: the student's submissions, test
+    // results and payment records are kept. (A bought plan's subscription
+    // row is a separate record and is not removed here.)
+    if (!window.confirm(`Remove ${nameOf(studentId)} from ${batchName(batchId)}? This deletes their enrolment record — their submissions, test results and payment records are kept.`)) return;
     const { error } = await supabase.from("enrollments").delete().eq("batch_id", batchId).eq("student_id", studentId);
-    if (error) setMsg(error.message); else loadAll();
+    if (error) setMsg(error.message); else { setData(prev => ({ ...prev, enrollments: (prev.enrollments || []).filter(e => !(s(e, "batch_id") === batchId && s(e, "student_id") === studentId)) })); loadAll(); }
   }
   // ---- assignments: submit + grade ----
   async function submitAssignment(aid: string) {
@@ -807,14 +830,10 @@ export default function DashboardPage() {
     const { error } = await supabase.from("submissions").update({ marks: Number(g.marks), feedback: g.feedback || "", status: "graded" }).eq("id", subId);
     if (error) setMsg(error.message); else { setMsg("Graded."); loadAll(); }
   }
-  // ---- tests: enter marks ----
-  async function enterMarks(testId: string) {
-    const stu = testStu[testId]; const marks = testMarks[testId];
-    if (!stu || !marks) return setMsg("Pick a student and enter marks.");
-    const { error } = await supabase.from("test_results").upsert({ test_id: testId, student_id: stu, marks: Number(marks), remarks: testRem[testId] || "" }, { onConflict: "test_id,student_id" });
-    if (error) setMsg(error.message); else { setMsg("Marks saved."); loadAll(); }
-  }
   // ---- attendance roster ----
+  // (Manual test-marks entry used to live here. It moved into
+  // TestModule.tsx; the dead code was removed in the Nov 2026 audit pass
+  // after grep confirmed zero references.)
   function rosterStudents(batchId: string) {
     const enrolled = (data.enrollments || []).filter(e => s(e, "batch_id") === batchId).map(e => s(e, "student_id"));
     return enrolled.length ? students.filter(p => enrolled.includes(s(p, "id"))) : [];
@@ -823,28 +842,64 @@ export default function DashboardPage() {
     if (!attBatch || !attDate) return setMsg("Pick a batch and a date.");
     const roster = rosterStudents(attBatch);
     if (!roster.length) return setMsg("No students enrolled in this batch yet — enrol students in Batches first.");
+    const savedRows: Row[] = [];
     for (const stu of roster) {
       const st = attMarks[s(stu, "id")] || "present";
-      const { error } = await supabase.from("attendance").upsert({ batch_id: attBatch, student_id: s(stu, "id"), att_date: attDate, status: st, marked_by: profile?.id }, { onConflict: "batch_id,student_id,att_date" });
+      const row: Row = { batch_id: attBatch, student_id: s(stu, "id"), att_date: attDate, status: st, marked_by: profile?.id };
+      const { error } = await supabase.from("attendance").upsert(row, { onConflict: "batch_id,student_id,att_date" });
       if (error) { setMsg(error.message); return; }
+      savedRows.push(row);
     }
+    // Optimistic merge so the saved roster shows at once, before reload.
+    setData(prev => { const rows = [...(prev.attendance || [])]; for (const r of savedRows) { const i = rows.findIndex(x => s(x, "batch_id") === s(r, "batch_id") && s(x, "student_id") === s(r, "student_id") && s(x, "att_date") === s(r, "att_date")); if (i >= 0) rows[i] = { ...rows[i], ...r }; else rows.push(r); } return { ...prev, attendance: rows }; });
     setMsg(`Attendance saved for ${roster.length} students on ${attDate}.`); loadAll();
   }
   // ---- fees ----
+  // Receipt numbers are derived from the MAX existing manual receipt suffix
+  // (U++-<year>-NNNN), not the row count — deleting a fee row used to make
+  // the count-based number collide with a live receipt. Cashfree receipts
+  // (U++-CF-…) use a different format and are excluded by the pattern
+  // below. A UNIQUE constraint (supabase/add-fee-receipt-unique.sql, not
+  // yet run) backs this up; on a 23505 collision we recompute once and retry.
+  async function nextReceiptNo(): Promise<string> {
+    const year = new Date().getFullYear();
+    const { data: rows } = await supabase.from("fees").select("receipt_no").not("receipt_no", "is", null).limit(500);
+    const max = (rows || []).reduce((m: number, r: Row) => {
+      const mt = String(r.receipt_no || "").match(new RegExp(`^U\\+\\+-${year}-(\\d+)$`));
+      return mt ? Math.max(m, Number(mt[1])) : m;
+    }, 0);
+    return `U++-${year}-${String(max + 1).padStart(4, "0")}`;
+  }
   async function createFee(e: React.FormEvent) {
     e.preventDefault(); setMsg("");
     if (!feeStu || !feeAmt) return setMsg("Pick a student and enter an amount.");
-    const { count } = await supabase.from("fees").select("id", { count: "exact", head: true });
-    const receipt = `U++-2026-${String((count || 0) + 1).padStart(4, "0")}`;
     const base = Number(feeAmt);
     const cp = feeCoupon ? findCoupon(feeCoupon) : null;
     const finalAmt = cp ? Math.round(base * (1 - n(cp, "discount_percent") / 100)) : base;
-    const { error } = await supabase.from("fees").insert({ student_id: feeStu, batch_id: feeBatch || null, amount: finalAmt, due_month: feeMonth || "", status: feeStatus, receipt_no: receipt, paid_at: feeStatus === "paid" ? new Date().toISOString() : null, payment_mode: feeMode, upi_reference: feeUpiRef || null, coupon_code: feeCoupon || null, created_by: profile?.id });
-    if (error) setMsg(error.message); else { setMsg(`Fee saved. Receipt ${receipt}.` + (cp ? ` Coupon ${feeCoupon} applied (${n(cp, "discount_percent")}% off): ₹${base} → ₹${finalAmt}.` : "") + (feeMode === "UPI" ? " Recorded as a UPI payment — no online gateway is connected, so collect it on your UPI ID and keep the reference above." : "")); setFeeAmt(""); setFeeMonth(""); setFeeCoupon(""); setFeeUpiRef(""); loadAll(); }
+    const feePayload = { student_id: feeStu, batch_id: feeBatch || null, amount: finalAmt, due_month: feeMonth || "", status: feeStatus, paid_at: feeStatus === "paid" ? new Date().toISOString() : null, payment_mode: feeMode, upi_reference: feeUpiRef || null, coupon_code: feeCoupon || null, created_by: profile?.id };
+    let receipt = await nextReceiptNo();
+    let { data: insertedFee, error } = await supabase.from("fees").insert({ ...feePayload, receipt_no: receipt }).select().single();
+    if (error && error.code === "23505") {
+      receipt = await nextReceiptNo();
+      const retry = await supabase.from("fees").insert({ ...feePayload, receipt_no: receipt }).select().single();
+      insertedFee = retry.data; error = retry.error;
+    }
+    if (error) setMsg(error.message); else { if (insertedFee) setData(prev => ({ ...prev, fees: [insertedFee as Row, ...(prev.fees || [])] })); setMsg(`Fee saved. Receipt ${receipt}.` + (cp ? ` Coupon ${feeCoupon} applied (${n(cp, "discount_percent")}% off): ₹${base} → ₹${finalAmt}.` : "") + (feeMode === "UPI" ? " Recorded as a UPI payment — no online gateway is connected, so collect it on your UPI ID and keep the reference above." : "")); setFeeAmt(""); setFeeMonth(""); setFeeCoupon(""); setFeeUpiRef(""); loadAll(); }
   }
   async function markPaid(feeId: string) {
-    const { error } = await supabase.from("fees").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", feeId);
-    if (error) setMsg(error.message); else { setMsg("Marked as paid."); loadAll(); }
+    const paidAt = new Date().toISOString();
+    const { error } = await supabase.from("fees").update({ status: "paid", paid_at: paidAt }).eq("id", feeId);
+    if (error) setMsg(error.message); else { setData(prev => ({ ...prev, fees: (prev.fees || []).map(f => s(f, "id") === feeId ? { ...f, status: "paid", paid_at: paidAt } : f) })); setMsg("Marked as paid."); loadAll(); }
+  }
+  // Fee reminder (Admin): reuses the existing notifications table with the
+  // exact shape announcements use ({ user_id, title, body }) — no new
+  // table, no type/category column (the table has none).
+  async function remindFee(fee: Row) {
+    const sid = s(fee, "student_id");
+    if (!sid) return;
+    const batch = batchName(s(fee, "batch_id"));
+    const { error } = await supabase.from("notifications").insert({ user_id: sid, title: "Fee reminder", body: `Your fee of ₹${n(fee, "amount")}${batch !== "—" ? ` for ${batch}` : ""} is pending${s(fee, "due_month") ? ` (due ${s(fee, "due_month")})` : ""}. Please pay at the institute or contact Admin.` });
+    if (error) setMsg(error.message); else setMsg(`Fee reminder sent to ${nameOf(sid)}.`);
   }
   // ---- ClassWalla: coupons / courses / timetable / leads ----
   function findCoupon(code: string) {
@@ -993,6 +1048,7 @@ export default function DashboardPage() {
   }
   // ---- teacher onboarding (Admin) ----
   async function reviewRequest(id: string, status: "approved" | "rejected") {
+    if (status === "rejected" && !window.confirm("Reject this teacher request? Its status will be set to rejected.")) return;
     const { error } = await supabase.from("teacher_requests").update({ status, reviewed_by: profile?.id }).eq("id", id);
     if (error) setMsg(error.message); else { setMsg(`Teacher request ${status}.`); loadAll(); }
   }
@@ -1111,10 +1167,10 @@ export default function DashboardPage() {
         <main className="min-w-0 flex-1">
           {msg && <p className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{msg}</p>}
           {childProfile && <p className="mb-3 rounded-xl bg-brand-tint p-3 text-sm font-bold text-brand-dark">Parent view — showing your child {effectiveName}&rsquo;s fees, attendance, tests and assignments below.</p>}
-          {cert && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="w-full max-w-lg rounded-3xl border-4 border-amber-400 bg-white p-8 text-center shadow-xl">
+          {cert && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="w-full max-w-lg rounded-3xl border-4 border-amber-400 bg-white p-5 text-center shadow-xl sm:p-8">
             <img src="/logo.jpg" alt="U++ Academy" className="mx-auto mb-3 h-14 w-14 rounded-2xl object-cover" />
-            <p className="text-xs font-extrabold uppercase tracking-widest text-brand-dark">U++ Academy · {profile.institute_name || "U++ Academy"}</p>
-            <h2 className="mt-2 text-3xl font-extrabold">Certificate of Achievement</h2>
+            <p className="break-words text-xs font-extrabold uppercase tracking-widest text-brand-dark">U++ Academy · {profile.institute_name || "U++ Academy"}</p>
+            <h2 className="mt-2 text-2xl font-extrabold sm:text-3xl">Certificate of Achievement</h2>
             <p className="mt-4 text-sm text-slate-600">This certificate is awarded to</p>
             <p className="mt-1 text-2xl font-extrabold">{cert.student}</p>
             <p className="mt-3 text-sm text-slate-600">for scoring <b>{cert.marks} / {cert.total}</b> ({Math.round(cert.marks / (cert.total || 1) * 100)}%) in</p>
@@ -1222,6 +1278,12 @@ export default function DashboardPage() {
               ["New Leads", String(newLeads)],
               ["Pending Doubts", String(openDoubts.length)],
             ];
+            // Charts (admin/teacher overview): computed from attendance +
+            // test_results already loaded by loadAll — no extra fetch, no
+            // chart library, pure CSS bars. Teachers see only their batches.
+            const chartBatches = profile.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches;
+            const attByBatch = chartBatches.map(b => { const rows = (data.attendance || []).filter(a => s(a, "batch_id") === s(b, "id")); return { id: s(b, "id"), name: s(b, "name"), pct: rows.length ? Math.round(rows.filter(a => s(a, "status") === "present").length / rows.length * 100) : null as number | null }; });
+            const scoreByBatch = chartBatches.map(b => { const ts = (data.tests || []).filter(t => s(t, "batch_id") === s(b, "id")); const ids = new Set(ts.map(t => s(t, "id"))); const res = (data.test_results || []).filter(r => ids.has(s(r, "test_id"))); const pcts = res.map(r => { const t = ts.find(x => s(x, "id") === s(r, "test_id")); const tot = t ? n(t, "total_marks") : 0; return tot > 0 ? n(r, "marks") / tot * 100 : null; }).filter((x): x is number => x !== null); return { id: s(b, "id"), name: s(b, "name"), pct: pcts.length ? Math.round(pcts.reduce((a, v) => a + v, 0) / pcts.length) : null as number | null }; });
             return (
             <div>
               <div className="rounded-3xl bg-gradient-to-r from-brand to-brand-dark p-6 text-white">
@@ -1233,6 +1295,17 @@ export default function DashboardPage() {
               </div>
               <div className="card mt-5"><h3 className="font-extrabold">Upcoming live classes</h3>
                 {upcoming.length === 0 ? <p className="mt-2 text-sm text-slate-500">No live classes scheduled ahead. Schedule one in Live Classes.</p> : <ul className="mt-2 space-y-1 text-sm">{upcoming.map(c => <li key={s(c, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span><b>{s(c, "title")}</b> · {s(c, "subject")}</span><span className="text-slate-500">{new Date(s(c, "starts_at")).toLocaleString()}</span></li>)}</ul>}
+              </div>
+              <div className="card mt-5"><h3 className="font-extrabold">Attendance &amp; test scores by batch</h3>
+                <p className="mt-1 text-xs text-slate-500">From attendance and test results already loaded — no extra data fetched.</p>
+                <h4 className="mt-4 text-sm font-extrabold">Attendance % by batch</h4>
+                {attByBatch.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet.</p> : attByBatch.every(r => r.pct === null) ? <p className="mt-2 text-sm text-slate-500">No attendance recorded yet — mark attendance in the Attendance section.</p> : <div className="mt-2 space-y-3">{attByBatch.map(r => (
+                  <div key={r.id}><div className="flex items-baseline justify-between gap-2 text-xs"><span className="min-w-0 truncate font-bold">{r.name}</span><span className="shrink-0 font-extrabold text-brand-dark">{r.pct === null ? "—" : `${r.pct}%`}</span></div><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand" style={{ width: `${r.pct ?? 0}%` }} /></div></div>
+                ))}</div>}
+                <h4 className="mt-5 text-sm font-extrabold">Average test score by batch</h4>
+                {scoreByBatch.length === 0 ? <p className="mt-2 text-sm text-slate-500">No batches yet.</p> : scoreByBatch.every(r => r.pct === null) ? <p className="mt-2 text-sm text-slate-500">No test results yet — scores appear here once tests are attempted and marked.</p> : <div className="mt-2 space-y-3">{scoreByBatch.map(r => (
+                  <div key={r.id}><div className="flex items-baseline justify-between gap-2 text-xs"><span className="min-w-0 truncate font-bold">{r.name}</span><span className="shrink-0 font-extrabold text-brand-dark">{r.pct === null ? "—" : `${r.pct}%`}</span></div><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-amber-500" style={{ width: `${r.pct ?? 0}%` }} /></div></div>
+                ))}</div>}
               </div>
               <div className="card mt-5"><h3 className="font-extrabold">To-do — needs your attention</h3>
                 <ul className="mt-2 space-y-2 text-sm">
@@ -1293,13 +1366,15 @@ export default function DashboardPage() {
         {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","tests","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="tests" ? "Tests" : k==="doubts" ? "Doubt" : "Tasks"; const active = section===k; const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} aria-current={active ? "page" : undefined} className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${active ? "bg-brand text-white" : "text-slate-400"}`}><Ico className="h-5 w-5" /></span><span className={`max-w-full truncate ${active ? "text-brand-dark" : "text-slate-400"}`}>{label}</span></button>; })}
         <button onClick={()=>setMoreOpen(true)} aria-expanded={moreOpen} aria-label="More sections" className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${moreOpen ? "bg-brand text-white" : "text-slate-400"}`}><MoreHorizontal className="h-5 w-5" /></span><span className={moreOpen ? "text-brand-dark" : "text-slate-400"}>More</span></button>
       </nav>
-      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="app-sheet absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="app-press flex h-10 w-10 items-center justify-center rounded-xl border" aria-label="Close menu"><X className="h-5 w-5" /></button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>{ const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} className="app-press flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-2xl border p-3 text-center text-xs font-bold"><Ico className="h-5 w-5 text-brand" />{sectionLabel(k)}{!isEnabled(k) && <span className="text-[10px] text-accent-ink">Off</span>}</button>; })}</div><button onClick={logout} className="app-press mt-4 min-h-[48px] w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
+      {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="app-sheet absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="app-press flex h-10 w-10 items-center justify-center rounded-xl border" aria-label="Close menu"><X className="h-5 w-5" /></button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>{ const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} className="app-press flex min-h-[64px] min-w-0 flex-col items-center justify-center gap-1 break-words rounded-2xl border p-3 text-center text-xs font-bold"><Ico className="h-5 w-5 shrink-0 text-brand" />{sectionLabel(k)}{!isEnabled(k) && <span className="text-[10px] text-accent-ink">Off</span>}</button>; })}</div><button onClick={logout} className="app-press mt-4 min-h-[48px] w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
     </div>
   );
 
   // ---------- per-section renderers (defined after return for readability; hoisted function) ----------
   function renderSection() {
-    const empty = (t: string) => <div className="card mt-3 text-sm text-slate-500">{t}</div>;
+    // Honest empty state: while a load is in flight, say so — a list that
+    // is merely still loading must never claim "No X yet."
+    const empty = (t: string) => <div className="card mt-3 text-sm text-slate-500">{dataLoading ? "Loading…" : t}</div>;
     if (section === "batches") return (
       <div>
         {profile?.role === "admin" && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create batch</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1508,7 +1583,7 @@ export default function DashboardPage() {
                   {profile?.role === "admin" && <button onClick={() => startEditBatch(b)} className="app-press rounded-lg border px-3 py-1.5 text-xs font-bold">Edit batch</button>}
                   <button onClick={() => setShowEnrolled(showEnrolled === s(b, "id") ? "" : s(b, "id"))} className="app-press rounded-lg border px-3 py-1.5 text-xs font-bold">{showEnrolled === s(b, "id") ? "Hide students" : "Show enrolled students"}</button>
                 </div>
-                {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
+                {showEnrolled === s(b, "id") && <ul className="mt-2 space-y-1 text-sm">{enrolled.length === 0 ? <li className="text-slate-500">Nobody enrolled yet.</li> : enrolled.map(e => { const sb = subFor(s(e, "student_id"), s(b, "id")); return <li key={s(e, "id")} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2"><span className="min-w-0 break-words">{nameOf(s(e, "student_id"))}{sb ? <span className="text-xs text-slate-500"> · {s(sb, "plan_name") || "Enrolled"}{s(sb, "valid_until") ? ` · valid until ${s(sb, "valid_until")}` : ""}{s(sb, "status") === "expired" || (s(sb, "valid_until") && s(sb, "valid_until") < todayStr) ? " · Expired" : ""}</span> : null}</span>{isStaff && <button onClick={() => unenrol(s(b, "id"), s(e, "student_id"))} className="min-h-[40px] shrink-0 rounded-lg px-2 text-xs font-bold text-red-700">Remove</button>}</li>; })}</ul>}
               </div>}
             </div></div>;
           })}
@@ -1517,7 +1592,7 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-slate-600">Who paid, for which batch, and whether Cashfree confirmed it. Only “paid” orders enrol the student automatically. If a student paid in cash/UPI at the institute instead, enrol them with the “Enrol a student” panel above and record the fee in Fees &amp; Receipts.</p>
           <div className="mt-3 space-y-2">
             {(data.payments || []).length === 0 && <p className="text-sm text-slate-500">No payments yet. Paid batches show here once a student pays via Cashfree.</p>}
-            {(data.payments || []).map(p => <div key={s(p, "id")} className="rounded-xl border p-3 text-sm"><b>{nameOf(s(p, "student_id"))}</b> — {s(p, "batch_id") ? batchName(s(p, "batch_id")) : (data.courses || []).find(c => s(c, "id") === s(p, "course_id")) ? s((data.courses || []).find(c => s(c, "id") === s(p, "course_id")), "title") : "—"} · ₹{String(p.amount)} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status")}</span></div>)}
+            {(data.payments || []).map(p => <div key={s(p, "id")} className="break-words rounded-xl border p-3 text-sm"><b>{nameOf(s(p, "student_id"))}</b> — {s(p, "batch_id") ? batchName(s(p, "batch_id")) : (data.courses || []).find(c => s(c, "id") === s(p, "course_id")) ? s((data.courses || []).find(c => s(c, "id") === s(p, "course_id")), "title") : "—"} · ₹{String(p.amount)} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status")}</span></div>)}
           </div>
         </div>}
       </div>
@@ -1538,6 +1613,7 @@ export default function DashboardPage() {
           <div><label className="label">Chapter</label><input className="input" value={form.chapter || ""} onChange={e => setForm({ ...form, chapter: e.target.value })} /></div>
           <div><label className="label">YouTube URL</label><input className="input" value={form.youtube_url || ""} onChange={e => setForm({ ...form, youtube_url: e.target.value })} placeholder="https://www.youtube.com/watch?v=…" /></div>
           <div><label className="label">Notes</label><input className="input" value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Text notes, or paste a Google Drive link" /><p className="mt-1 text-xs text-slate-500">Tip: paste a Google Drive link — set the file to “Anyone with the link can view” or students will see an access request.</p></div>
+          <div><label className="label">Duration (minutes)</label><input type="number" min="1" className="input" value={form.duration_minutes || ""} onChange={e => setForm({ ...form, duration_minutes: e.target.value })} placeholder="e.g. 45" /></div>
         </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save lecture</button></form>}
         {!isStaff && activeBatchIds.size === 0 && (
           myEnrols.length > 0
@@ -1756,10 +1832,10 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-slate-600">Every online payment you made, with its verified status from the database. “Paid” means Cashfree confirmed it and your enrolment was created.</p>
           <div className="mt-3 space-y-2">
             {(data.payments || []).length === 0 && <p className="text-sm text-slate-500">No online payments yet — buy a batch plan in My Batches to see it here.</p>}
-            {(data.payments || []).map(p => <div key={s(p, "id")} className="rounded-xl border p-3 text-sm"><b>₹{String(p.amount)}</b> — {batchName(s(p, "batch_id"))} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} · {s(p, "created_at") ? new Date(s(p, "created_at")).toLocaleDateString() : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" || s(p, "status") === "successful" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : s(p, "status") === "refunded" ? "bg-slate-200 text-slate-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status") === "paid" || s(p, "status") === "successful" ? "Successful" : s(p, "status") === "created" || s(p, "status") === "pending" ? "Pending" : s(p, "status")}</span> <a href={`/payment/result?order_id=${encodeURIComponent(s(p, "order_id"))}`} className="ml-2 font-bold text-brand-dark underline">Details →</a></div>)}
+            {(data.payments || []).map(p => <div key={s(p, "id")} className="break-words rounded-xl border p-3 text-sm"><b>₹{String(p.amount)}</b> — {batchName(s(p, "batch_id"))} · Order {s(p, "order_id")}{s(p, "cf_payment_id") ? ` · Cashfree payment ${s(p, "cf_payment_id")}` : ""} · {s(p, "created_at") ? new Date(s(p, "created_at")).toLocaleDateString() : ""} <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-extrabold ${s(p, "status") === "paid" || s(p, "status") === "successful" ? "bg-brand-tint text-brand-dark" : s(p, "status") === "failed" ? "bg-red-100 text-red-700" : s(p, "status") === "refunded" ? "bg-slate-200 text-slate-700" : "bg-amber-100 text-amber-800"}`}>{s(p, "status") === "paid" || s(p, "status") === "successful" ? "Successful" : s(p, "status") === "created" || s(p, "status") === "pending" ? "Pending" : s(p, "status")}</span> <a href={`/payment/result?order_id=${encodeURIComponent(s(p, "order_id"))}`} className="ml-2 font-bold text-brand-dark underline">Details →</a></div>)}
           </div>
         </div>}
-        <div className="mt-4 space-y-2">{list.length === 0 && empty("No fees recorded yet.")}{list.map(f => <div key={s(f, "id")} className="card !p-4"><b className="text-sm">₹{String(f.amount)} — {nameOf(s(f, "student_id"))}</b><p className="text-xs text-slate-500">Receipt {s(f, "receipt_no") || "—"} · {batchName(s(f, "batch_id"))} · Due {s(f, "due_month")} · {s(f, "paid_at") ? `Paid ${new Date(s(f, "paid_at")).toLocaleDateString()}` : "Not paid"}{s(f, "payment_mode") ? ` · ${s(f, "payment_mode")}` : ""}{s(f, "upi_reference") ? ` · UPI ref: ${s(f, "upi_reference")}` : ""}{s(f, "coupon_code") ? ` · Coupon: ${s(f, "coupon_code")}` : ""}{feeUpiId ? ` · Pay UPI: ${feeUpiId}` : ""}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(f, "status") === "paid" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(f, "status")}</span>{profile?.role === "admin" && s(f, "status") === "pending" && <button onClick={() => markPaid(s(f, "id"))} className="btn-brand ml-2 !py-1.5 text-xs">Mark as paid</button>}</div>)}</div></div>; })()}
+        <div className="mt-4 space-y-2">{list.length === 0 && empty("No fees recorded yet.")}{list.map(f => <div key={s(f, "id")} className="card break-words !p-4"><b className="text-sm">₹{String(f.amount)} — {nameOf(s(f, "student_id"))}</b><p className="break-words text-xs text-slate-500">Receipt {s(f, "receipt_no") || "—"} · {batchName(s(f, "batch_id"))} · Due {s(f, "due_month")} · {s(f, "paid_at") ? `Paid ${new Date(s(f, "paid_at")).toLocaleDateString()}` : "Not paid"}{s(f, "payment_mode") ? ` · ${s(f, "payment_mode")}` : ""}{s(f, "upi_reference") ? ` · UPI ref: ${s(f, "upi_reference")}` : ""}{s(f, "coupon_code") ? ` · Coupon: ${s(f, "coupon_code")}` : ""}{feeUpiId ? ` · Pay UPI: ${feeUpiId}` : ""}</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-bold ${s(f, "status") === "paid" ? "bg-brand-tint text-brand-dark" : "bg-amber-100 text-amber-800"}`}>{s(f, "status")}</span>{profile?.role === "admin" && s(f, "status") === "pending" && <><button onClick={() => markPaid(s(f, "id"))} className="btn-brand ml-2 min-h-[40px] !py-1.5 text-xs">Mark as paid</button><button onClick={() => remindFee(f)} className="ml-2 min-h-[40px] rounded-lg border px-3 py-1.5 text-xs font-bold">Remind</button></>}</div>)}</div></div>; })()}
       </div>
     );
     if (section === "doubts") return (
@@ -1820,7 +1896,7 @@ export default function DashboardPage() {
                   <span className="flex items-center gap-1"><MessageCircleQuestion className="h-4 w-4" />{answers.length} answer{answers.length === 1 ? "" : "s"}</span>
                   <span>▲ {upvotes} upvote{upvotes === 1 ? "" : "s"}</span>
                   {accepted && <span className="text-brand-dark">✓ Accepted answer: {s(accepted, "author_name")}</span>}
-                  <button onClick={() => setOpenQ(open ? "" : qid)} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-700">{open ? "Hide discussion" : "View / answer"}</button>
+                  <button onClick={() => setOpenQ(open ? "" : qid)} className="min-h-[40px] rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-700">{open ? "Hide discussion" : "View / answer"}</button>
                 </div>
                 {open && <div className="mt-3 space-y-3 border-t pt-3">
                   {answers.length === 0 && <p className="text-sm text-slate-500">No answers yet — be the first to help.</p>}
@@ -1832,9 +1908,9 @@ export default function DashboardPage() {
                       <p className="text-xs text-slate-500"><b className="text-slate-800">{s(a, "author_name")}</b> · <span className="capitalize">{s(a, "author_role")}</span> · {s(a, "created_at") ? new Date(s(a, "created_at")).toLocaleString() : ""}{String(a.is_accepted) === "true" && <span className="ml-2 rounded-full bg-brand px-2 py-0.5 text-[10px] font-extrabold text-white">✓ Accepted answer</span>}</p>
                       <p className="mt-1 text-sm">{s(a, "body")}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <button onClick={() => toggleVote(aid)} className={`rounded-full px-3 py-1 text-xs font-extrabold ${voted ? "bg-brand text-white" : "bg-slate-200"}`}>▲ {forumVotes(aid)} {voted ? "Upvoted" : "Upvote"}</button>
-                        {String(a.is_accepted) !== "true" && (s(q, "student_id") === effectiveId || profile?.role === "teacher" || profile?.role === "admin") && <button onClick={() => acceptAnswer(qid, aid)} className="rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold">Mark as accepted</button>}
-                        <button onClick={() => setReplyTo({ ...replyTo, [aid]: replyTo[aid] ? "" : "open" })} className="rounded-full border px-3 py-1 text-xs font-bold">Reply</button>
+                        <button onClick={() => toggleVote(aid)} className={`min-h-[40px] rounded-full px-3 py-1 text-xs font-extrabold ${voted ? "bg-brand text-white" : "bg-slate-200"}`}>▲ {forumVotes(aid)} {voted ? "Upvoted" : "Upvote"}</button>
+                        {String(a.is_accepted) !== "true" && (s(q, "student_id") === effectiveId || profile?.role === "teacher" || profile?.role === "admin") && <button onClick={() => acceptAnswer(qid, aid)} className="min-h-[40px] rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold">Mark as accepted</button>}
+                        <button onClick={() => setReplyTo({ ...replyTo, [aid]: replyTo[aid] ? "" : "open" })} className="min-h-[40px] rounded-full border px-3 py-1 text-xs font-bold">Reply</button>
                       </div>
                       {replies.map(r => <div key={s(r, "id")} className="ml-4 mt-2 rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500"><b className="text-slate-800">{s(r, "author_name")}</b> · <span className="capitalize">{s(r, "author_role")}</span></p><p className="mt-1 text-sm">{s(r, "body")}</p></div>)}
                       {replyTo[aid] === "open" && <div className="ml-4 mt-2"><textarea className="input" rows={2} placeholder="Reply to this answer…" value={ansText[`${qid}:${aid}`] || ""} onChange={e => setAnsText({ ...ansText, [`${qid}:${aid}`]: e.target.value })} /><button onClick={() => postForumAnswer(qid, aid)} className="btn-brand mt-2 !py-2 text-xs">Post reply</button></div>}
@@ -1858,7 +1934,7 @@ export default function DashboardPage() {
         <h3 className="mt-5 font-extrabold">Announcements</h3>
         <div className="mt-2 space-y-2">{(data.announcements || []).length === 0 && empty("No announcements yet.")}{(data.announcements || []).map(a => <div key={s(a, "id")} className="card !p-4"><b className="text-sm">{s(a, "title")}</b><p className="text-sm text-slate-600">{s(a, "body")}</p><p className="text-xs text-slate-500">Audience: {s(a, "audience")}</p></div>)}</div>
         <h3 className="mt-5 font-extrabold">Your notifications</h3>
-        <div className="mt-2 space-y-2">{(data.notifications || []).filter(nt => viewUser(nt)).length === 0 && empty("No notifications for you yet.")}{(data.notifications || []).filter(nt => viewUser(nt)).map(nt => <div key={s(nt, "id")} className="card !p-4"><b className="text-sm">{s(nt, "title")}</b><p className="text-sm text-slate-600">{s(nt, "body")}</p>{!nt.is_read ? <button onClick={() => markRead(s(nt, "id"))} className="mt-2 rounded-lg border px-3 py-1 text-xs font-bold">Mark as read</button> : <span className="mt-2 inline-block text-xs font-bold text-brand-dark">✓ Read</span>}</div>)}</div>
+        <div className="mt-2 space-y-2">{(data.notifications || []).filter(nt => viewUser(nt)).length === 0 && empty("No notifications for you yet.")}{(data.notifications || []).filter(nt => viewUser(nt)).map(nt => <div key={s(nt, "id")} className="card !p-4"><b className="text-sm">{s(nt, "title")}</b><p className="text-sm text-slate-600">{s(nt, "body")}</p>{!nt.is_read ? <button onClick={() => markRead(s(nt, "id"))} className="mt-2 min-h-[40px] rounded-lg border px-3 py-1 text-xs font-bold">Mark as read</button> : <span className="mt-2 inline-block text-xs font-bold text-brand-dark">✓ Read</span>}</div>)}</div>
       </div>
     );
     if (section === "users") return (

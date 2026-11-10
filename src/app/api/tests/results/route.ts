@@ -6,7 +6,7 @@
 // returned when the test hides them.
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getAuth, s, n, type Row } from "../lib";
+import { getAuth, totalsFromAnswers, s, n, type Row } from "../lib";
 
 export async function GET(request: NextRequest) {
   try {
@@ -49,17 +49,31 @@ export async function GET(request: NextRequest) {
       if (!myLatest) return NextResponse.json({ released, has_attempt: false, result: null, review: [] });
       const { data: answers } = await supabase.from("student_answers").select("*").eq("attempt_id", s(myLatest, "id"));
       const ansMap = new Map(((answers as Row[]) || []).map(a => [s(a, "question_id"), a]));
+      const breakdown = totalsFromAnswers(qs, (answers as Row[]) || []);
       const review = qs.map(q => {
         const a = ansMap.get(s(q, "id"));
         const selected = a ? (Array.isArray(a.selected) ? a.selected : []).map(String) : [];
+        const isDescriptive = s(q, "question_type") === "descriptive";
+        const answerText = a ? s(a, "answer_text") : "";
+        const graded = a && a.manual_marks !== null && a.manual_marks !== undefined && a.manual_marks !== "";
+        // A descriptive answer is "awaiting grading" while it has typed text
+        // and no manual mark yet; it must never be shown as 0 marks.
+        const pendingManual = isDescriptive && answerText.trim() !== "" && !graded;
         return {
           question_id: s(q, "id"), question_text: s(q, "question_text"),
+          question_type: s(q, "question_type") || "single",
           options: (Array.isArray(q.options) ? q.options : []).map((o: Row) => ({ label: String(o.label), text: String(o.text ?? "") })),
           selected, marks: n(q, "marks") || 1,
           is_correct: a ? a.is_correct === true : false,
           marks_awarded: a ? n(a, "marks_awarded") : 0,
-          correct_answers: showAnswers ? (Array.isArray(q.correct_answers) ? q.correct_answers : []).map(String) : undefined,
-          explanation: showExplanations ? s(q, "explanation") : undefined,
+          answer_text: isDescriptive ? answerText : undefined,
+          manual_marks: isDescriptive && graded ? Number(a.manual_marks) : null,
+          pending_manual: pendingManual,
+          correct_answers: showAnswers && !isDescriptive ? (Array.isArray(q.correct_answers) ? q.correct_answers : []).map(String) : undefined,
+          // The explanation column holds the model answer / grading guidance
+          // for descriptive questions: it is only revealed once the answer
+          // has been graded (and only if the test shows explanations).
+          explanation: showExplanations && (!isDescriptive || graded) ? s(q, "explanation") : undefined,
         };
       });
       return NextResponse.json({
@@ -70,7 +84,9 @@ export async function GET(request: NextRequest) {
           percentage: n(myLatest, "percentage"), passed: myLatest.passed === true,
           time_taken_seconds: n(myLatest, "time_taken_seconds"),
           submitted_at: s(myLatest, "submitted_at"), attempt_number: n(myLatest, "attempt_number"),
-        } : { submitted_at: s(myLatest, "submitted_at"), attempt_number: n(myLatest, "attempt_number") },
+          auto_score: breakdown.autoScore, manual_score: breakdown.manualScore,
+          pending_manual: myLatest.manual_grading_pending === true,
+        } : { submitted_at: s(myLatest, "submitted_at"), attempt_number: n(myLatest, "attempt_number"), pending_manual: myLatest.manual_grading_pending === true },
         review: released ? review : review.map(r => ({ ...r, correct_answers: undefined, explanation: undefined })),
       });
     }
@@ -81,13 +97,49 @@ export async function GET(request: NextRequest) {
     const { data: allAnswers } = await supabase.from("student_answers").select("question_id,is_correct,attempt_id").in("attempt_id", submitted.map(a => s(a, "id")).slice(0, 500));
     const qStats = qs.map(q => {
       const rows = ((allAnswers as Row[]) || []).filter(a => s(a, "question_id") === s(q, "id"));
-      const correctCount = rows.filter(a => a.is_correct === true).length;
+      const isDescriptive = s(q, "question_type") === "descriptive";
+      // Descriptive questions have no auto right/wrong — accuracy is meaningless.
+      const correctCount = isDescriptive ? 0 : rows.filter(a => a.is_correct === true).length;
       return {
         question_id: s(q, "id"), question_text: s(q, "question_text"),
+        question_type: s(q, "question_type") || "single",
         attempted: rows.length, correct: correctCount,
-        accuracy: rows.length ? Math.round((correctCount / rows.length) * 100) : null,
+        accuracy: isDescriptive || !rows.length ? null : Math.round((correctCount / rows.length) * 100),
       };
     });
+
+    // Staff grading detail: ?attempt_id=… returns one attempt's descriptive
+    // answers (student text + model answer/guidance) for manual grading.
+    const gradeAttemptId = new URL(request.url).searchParams.get("attempt_id");
+    let grading: Row | null = null;
+    if (gradeAttemptId) {
+      const att = submitted.find(a => s(a, "id") === gradeAttemptId) || null;
+      if (att) {
+        const { data: gAnswers } = await supabase.from("student_answers").select("*").eq("attempt_id", gradeAttemptId);
+        const gMap = new Map(((gAnswers as Row[]) || []).map(a => [s(a, "question_id"), a]));
+        grading = {
+          attempt_id: s(att, "id"), student_id: s(att, "student_id"),
+          attempt_number: n(att, "attempt_number"), submitted_at: s(att, "submitted_at"),
+          score: n(att, "score"), max_marks: n(att, "max_marks"),
+          manual_grading_pending: att.manual_grading_pending === true,
+          answers: qs.filter(q => s(q, "question_type") === "descriptive").map(q => {
+            const a = gMap.get(s(q, "id"));
+            const graded = !!a && a.manual_marks !== null && a.manual_marks !== undefined && a.manual_marks !== "";
+            return {
+              question_id: s(q, "id"), question_text: s(q, "question_text"),
+              marks: n(q, "marks") || 1,
+              // Model answer / grading guidance (teacher-only column).
+              model_answer: s(q, "explanation"),
+              answer_text: a ? s(a, "answer_text") : "",
+              manual_marks: graded ? Number(a.manual_marks) : null,
+              graded_by: a ? s(a, "graded_by") : "",
+              graded_at: a ? s(a, "graded_at") : "",
+            };
+          }),
+        };
+      }
+    }
+
     return NextResponse.json({
       released: true,
       test: { id: s(t, "id"), title: s(t, "title"), batch_id: s(t, "batch_id"), total_marks: n(t, "total_marks") },
@@ -104,8 +156,10 @@ export async function GET(request: NextRequest) {
         score: n(a, "score"), max_marks: n(a, "max_marks"), percentage: n(a, "percentage"),
         passed: a.passed === true, time_taken_seconds: n(a, "time_taken_seconds"),
         submitted_at: s(a, "submitted_at"), status: s(a, "status"),
+        manual_grading_pending: a.manual_grading_pending === true,
       })),
       question_stats: qStats,
+      ...(grading ? { grading } : {}),
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not load results." }, { status: 500 });

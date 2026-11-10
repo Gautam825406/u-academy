@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
       .from("payments")
       .update({ status: "paid", cf_payment_id: cfPaymentId })
       .eq("order_id", orderId);
-    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (error) { console.error(`[cashfree webhook] payments update failed for order ${orderId}:`, error.message); return NextResponse.json({ ok: false, error: "Could not record the payment." }, { status: 500 }); }
 
     const studentId = String(payment.student_id);
     const batchId = payment.batch_id ? String(payment.batch_id) : null;

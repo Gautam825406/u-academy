@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { normalizeIndianMobile } from "@/lib/phone";
 
 // POST /api/cashfree/create-order  { batch_id, plan_id?, course_id? }
 // plan_id: a batch_plans row — its price is charged and its duration
@@ -78,13 +79,13 @@ export async function POST(request: NextRequest) {
       if (batchId) {
         const validUntil = durationDays ? new Date(Date.now() + durationDays * 86400000).toISOString().slice(0, 10) : null;
         const { error } = await supabase.from("enrollments").upsert({ batch_id: batchId, student_id: user.id, plan_id: planId || null, valid_until: validUntil, subscription_status: "active" }, { onConflict: "batch_id,student_id" });
-        if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+        if (error) { console.error(`[cashfree create-order] free enrolment failed for batch ${batchId}:`, error.message); return NextResponse.json({ error: "Could not enrol you in this batch. Please try again." }, { status: 400 }); }
         if (planId) {
           await supabase.from("subscriptions").insert({ student_id: user.id, batch_id: batchId, plan_id: planId, plan_name: String(plan?.name || "Plan"), amount_paid: 0, valid_from: new Date().toISOString().slice(0, 10), valid_until: validUntil, status: "active" });
         }
       } else if (courseId) {
         const { error } = await supabase.from("course_enrollments").insert({ course_id: courseId, student_id: user.id, price_paid: 0 });
-        if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+        if (error) { console.error(`[cashfree create-order] free course enrolment failed for course ${courseId}:`, error.message); return NextResponse.json({ error: "Could not enrol you in this course. Please try again." }, { status: 400 }); }
       }
       return NextResponse.json({ free: true, title });
     }
@@ -131,7 +132,9 @@ export async function POST(request: NextRequest) {
         customer_details: {
           customer_id: user.id,
           customer_email: profile?.email || user.email || "",
-          customer_phone: String(profile?.mobile || "").replace(/\D/g, "").slice(-10) || "9999999999",
+          // Real mobile when valid; "9999999999" only as a last resort for
+          // legacy profiles without one (see normalizeIndianMobile above).
+          customer_phone: normalizeIndianMobile(String(profile?.mobile || "")) ?? "9999999999",
           customer_name: String(profile?.full_name || "Student"),
         },
         order_meta: { return_url: `${origin}/api/cashfree/return?order_id=${orderId}` },
@@ -165,7 +168,7 @@ export async function POST(request: NextRequest) {
       status: "created",
       payment_mode: "Cashfree",
     });
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error) { console.error(`[cashfree create-order] payments insert failed for order ${orderId}:`, error.message); return NextResponse.json({ error: "Cashfree created the order but we could not record it. Please try again — if it keeps happening, ask Admin to check." }, { status: 400 }); }
 
     // The checkout session MUST exist. The frontend opens it ONLY via the
     // official Cashfree JS SDK v3 — never via a hand-built URL (see the
@@ -185,6 +188,9 @@ export async function POST(request: NextRequest) {
       cashfree_mode: isProd ? "production" : "sandbox",
     });
   } catch (e: unknown) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Could not start the payment." }, { status: 500 });
+    // Never surface raw error text to the client: DB / SDK errors can
+    // contain internals. Log server-side, return a generic message.
+    console.error("[cashfree create-order] unexpected error:", e instanceof Error ? e.message : String(e));
+    return NextResponse.json({ error: "Could not start the payment. Please try again." }, { status: 500 });
   }
 }

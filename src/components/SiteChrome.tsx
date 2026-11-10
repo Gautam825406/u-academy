@@ -9,12 +9,12 @@ export const LOCATIONS = [
 export function SiteHeader() {
   return (
     <header className="sticky top-0 z-50 border-b bg-[#f4f7f8]/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
-        <Link href="/" className="flex items-center gap-2 font-extrabold text-lg">
-          <img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" />
-          <span>
+      <div className="mx-auto flex h-16 max-w-6xl items-center gap-2 px-3 sm:gap-4 sm:px-5">
+        <Link href="/" className="flex min-w-0 shrink items-center gap-2 font-extrabold text-base sm:text-lg">
+          <img src="/logo.jpg" alt="U++ Academy" width={40} height={40} className="h-10 w-10 shrink-0 rounded-xl object-cover" />
+          <span className="min-w-0">
             U++ Academy
-            <small className="block text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+            <small className="hidden text-[10px] font-semibold uppercase tracking-widest text-slate-500 sm:block">
               Learn. Practice. Achieve.
             </small>
           </span>
@@ -26,8 +26,8 @@ export function SiteHeader() {
           <Link href="/about" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">About</Link>
           <Link href="/#faq" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">FAQ</Link>
         </nav>
-        <Link href="/auth/login" className="btn-ghost !px-4 !py-2 text-sm">Login</Link>
-        <Link href="/auth/register" className="btn-brand !px-4 !py-2 text-sm">Register</Link>
+        <Link href="/auth/login" className="btn-ghost ml-auto shrink-0 !px-3 !py-2.5 text-xs sm:!px-4 sm:text-sm">Login</Link>
+        <Link href="/auth/register" className="btn-brand shrink-0 !px-3 !py-2.5 text-xs sm:!px-4 sm:text-sm">Register</Link>
       </div>
     </header>
   );
@@ -58,7 +58,7 @@ export function SiteFooter() {
       <div className="mx-auto grid max-w-6xl gap-10 px-5 py-12 md:grid-cols-4">
         <div>
           <div className="flex items-center gap-2 font-extrabold text-lg">
-            <img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" />
+            <img src="/logo.jpg" alt="U++ Academy" width={40} height={40} className="h-10 w-10 rounded-xl object-cover" />
             <span>U++ Academy</span>
           </div>
           <p className="mt-3 text-sm text-white/70">Learn. Practice. Achieve.</p>

@@ -34,13 +34,16 @@ export default function ResetPasswordPage() {
       <Link href="/" className="font-extrabold">← U++ Academy</Link>
       <form onSubmit={submit} className="card mt-6">
         <h1 className="text-xl font-extrabold">Set a new password</h1>
-        <p className="mt-1 text-sm text-slate-500">Enter a new password for your Admin account, then sign in with it.</p>
+        <p className="mt-1 text-sm text-slate-500">Enter a new password for your account, then sign in with it.</p>
         <div className="mt-4 space-y-3">
           <div><label className="label">New password</label><input required type="password" className="input" value={password} onChange={e=>setPassword(e.target.value)} /></div>
           <div><label className="label">Confirm new password</label><input required type="password" className="input" value={confirm} onChange={e=>setConfirm(e.target.value)} /></div>
         </div>
         {msg && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{msg}</p>}
         <button disabled={busy} className="btn-brand mt-4 w-full">{busy ? "Updating…" : "Update password"}</button>
+        <p className="mt-3 text-center text-sm text-slate-500">
+          Link not working? <Link href="/auth/login" className="font-bold text-brand">Back to login</Link> and use “Forgot password?” to request a fresh link.
+        </p>
       </form>
     </div>
   );

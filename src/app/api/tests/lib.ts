@@ -83,36 +83,85 @@ export function orderQuestions(questions: Row[], questionOrder: string[]) {
 // Server-side scoring. single: exactly the one correct label. multiple:
 // the selected set must equal the correct set (all correct, no wrong).
 // Correct -> +marks, answered-wrong -> -negative_marks, unanswered -> 0.
-// Total is clamped at 0 (a test score never goes negative).
-export function scoreAttempt(questions: Row[], answers: Map<string, string[]>) {
+// Descriptive (essay) questions are NEVER auto-scored: a non-empty typed
+// answer scores 0 for now and is flagged pending_manual, so the attempt
+// total is explicitly provisional until a teacher grades it via
+// POST /api/tests/grade. Total is clamped at 0 (a test score never goes
+// negative). `texts` maps question_id -> typed descriptive answer.
+export function scoreAttempt(questions: Row[], answers: Map<string, string[]>, texts?: Map<string, string>) {
   let score = 0;
   let maxMarks = 0;
   let correct = 0;
   let incorrect = 0;
   let unattempted = 0;
-  const perQuestion = new Map<string, { is_correct: boolean; marks_awarded: number }>();
+  let pendingManual = 0;
+  const perQuestion = new Map<string, { is_correct: boolean | null; marks_awarded: number; pending_manual: boolean }>();
   for (const q of questions) {
     const marks = n(q, "marks") || 1;
     const neg = n(q, "negative_marks") || 0;
     maxMarks += marks;
+    const qid = s(q, "id");
+    if (s(q, "question_type") === "descriptive") {
+      const text = (texts?.get(qid) || "").trim();
+      if (!text) {
+        unattempted++;
+        perQuestion.set(qid, { is_correct: null, marks_awarded: 0, pending_manual: false });
+      } else {
+        pendingManual++;
+        perQuestion.set(qid, { is_correct: null, marks_awarded: 0, pending_manual: true });
+      }
+      continue;
+    }
     const correctAns = (Array.isArray(q.correct_answers) ? q.correct_answers : []).map(String);
-    const sel = answers.get(s(q, "id")) || [];
+    const sel = answers.get(qid) || [];
     if (!sel.length) {
       unattempted++;
-      perQuestion.set(s(q, "id"), { is_correct: false, marks_awarded: 0 });
+      perQuestion.set(qid, { is_correct: false, marks_awarded: 0, pending_manual: false });
       continue;
     }
     const ok = sameSet(sel, correctAns);
     if (ok) {
       correct++;
       score += marks;
-      perQuestion.set(s(q, "id"), { is_correct: true, marks_awarded: marks });
+      perQuestion.set(qid, { is_correct: true, marks_awarded: marks, pending_manual: false });
     } else {
       incorrect++;
       score -= neg;
-      perQuestion.set(s(q, "id"), { is_correct: false, marks_awarded: -neg });
+      perQuestion.set(qid, { is_correct: false, marks_awarded: -neg, pending_manual: false });
     }
   }
   if (score < 0) score = 0;
-  return { score, maxMarks, correct, incorrect, unattempted, perQuestion };
+  return { score, maxMarks, correct, incorrect, unattempted, pendingManual, perQuestion };
+}
+
+// Recompute an attempt's totals from its stored answers (used after manual
+// grading). MCQ marks come from student_answers.marks_awarded (set at
+// submit, negative marks included); descriptive marks come from
+// student_answers.manual_marks (null = not yet graded, contributes 0).
+// Returns the auto/manual breakdown plus whether any descriptive answer is
+// still awaiting a grade. Total is clamped at 0 like scoreAttempt.
+export function totalsFromAnswers(questions: Row[], answers: Row[]) {
+  const byQ = new Map(answers.map(a => [s(a, "question_id"), a]));
+  let maxMarks = 0;
+  let autoScore = 0;
+  let manualScore = 0;
+  let pendingManual = 0;
+  for (const q of questions) {
+    const marks = n(q, "marks") || 1;
+    maxMarks += marks;
+    const a = byQ.get(s(q, "id"));
+    if (!a) continue;
+    if (s(q, "question_type") === "descriptive") {
+      const text = s(a, "answer_text").trim();
+      if (text && a.manual_marks !== null && a.manual_marks !== undefined && a.manual_marks !== "") {
+        manualScore += Number(a.manual_marks) || 0;
+      } else if (text) {
+        pendingManual++;
+      }
+    } else {
+      autoScore += n(a, "marks_awarded");
+    }
+  }
+  const score = Math.max(0, autoScore + manualScore);
+  return { score, maxMarks, autoScore, manualScore, pendingManual };
 }
