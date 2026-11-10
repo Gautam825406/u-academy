@@ -74,7 +74,6 @@ export default function Landing() {
   const [enqText, setEnqText] = useState("");
   const [teach, setTeach] = useState({ full_name: "", email: "", mobile: "", subject: "Mathematics", experience_years: "", qualification: "" });
   const [teachMsg, setTeachMsg] = useState("");
-  const [adPlaying, setAdPlaying] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -220,43 +219,26 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ADVERTISEMENT VIDEO — click-to-play facade: thumbnail first, iframe loads only on tap */}
+      {/* ADVERTISEMENT VIDEO — official YouTube embed, as provided by the academy */}
       <section id="ad-video" className="mx-auto max-w-4xl px-5 py-14">
         <p className="text-center text-xs font-extrabold uppercase tracking-widest text-brand">Watch</p>
         <h2 className="mt-2 text-center text-3xl font-extrabold">See U++ Academy in Action</h2>
         <p className="mx-auto mt-2 max-w-xl text-center text-slate-600">Watch the U++ Academy advertisement video.</p>
         <div className="mx-auto mt-6 overflow-hidden rounded-[24px] shadow-xl ring-1 ring-slate-200">
-          {adPlaying ? (
-            <div className="aspect-video w-full bg-black">
-              <iframe
-                className="h-full w-full"
-                src="https://www.youtube-nocookie.com/embed/3FjF-WYljbs?rel=0"
-                title="U++ Academy advertisement video"
-                loading="lazy"
-                allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-              />
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setAdPlaying(true)}
-              className="relative block aspect-video w-full text-left"
-              aria-label="Play the U++ Academy advertisement video"
-            >
-              <img
-                src="https://i.ytimg.com/vi/3FjF-WYljbs/hqdefault.jpg"
-                alt="U++ Academy advertisement video thumbnail"
-                loading="lazy"
-                className="h-full w-full object-cover"
-              />
-              <span className="absolute inset-0 bg-black/25" />
-              <span className="absolute inset-0 grid place-items-center">
-                <span className="grid h-16 w-16 place-items-center rounded-full bg-brand text-2xl text-white shadow-xl ring-4 ring-white/70 transition-transform hover:scale-105 md:h-20 md:w-20 md:text-3xl">▶</span>
-              </span>
-              <span className="absolute bottom-3 left-3 rounded-full bg-black/60 px-3 py-1 text-xs font-bold text-white">Watch Our Advertisement</span>
-            </button>
-          )}
+          <div className="aspect-video w-full bg-black">
+            <iframe
+              className="h-full w-full"
+              width="560"
+              height="315"
+              src="https://www.youtube.com/embed/3FjF-WYljbs?si=u08alP-t8WjdB-zN"
+              title="YouTube video player"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              referrerPolicy="strict-origin-when-cross-origin"
+              loading="lazy"
+              allowFullScreen
+            />
+          </div>
         </div>
       </section>
 
