@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FEATURES, FEATURE_KEYS, type Profile } from "@/lib/types";
 import InstallAppButton from "@/components/InstallAppButton";
+import TestModule from "./TestModule";
 import "./app-shell.css";
 import {
   BarChart3, Bell, BookOpen, CalendarCheck, ChevronDown, ChevronLeft, ChevronRight,
@@ -26,7 +27,7 @@ const JUMP_TO = ["lectures","assignments","tests","live_classes","materials","at
 // A section outside a role's list can never be opened: openSection() and
 // the render guard below both enforce this list.
 const ROLE_SECTIONS: Record<string, string[]> = {
-  student: ["overview","batches","live_classes","lectures","assignments","doubts","materials","notifications","attendance","fees","profile"],
+  student: ["overview","batches","live_classes","lectures","assignments","tests","doubts","materials","notifications","attendance","fees","profile"],
   parent: ["overview","batches","live_classes","lectures","assignments","tests","materials","notifications","attendance","fees","doubts","profile"],
   teacher: ["overview","batches","lectures","materials","assignments","tests","live_classes","attendance","doubts","notifications","reports","profile"],
   admin: ["overview","batches","lectures","materials","assignments","tests","live_classes","attendance","fees","doubts","notifications","reports","users","permissions","profile"],
@@ -34,7 +35,7 @@ const ROLE_SECTIONS: Record<string, string[]> = {
 // Student-facing display names for the 11 student sections.
 const STUDENT_LABELS: Record<string, string> = {
   overview: "Overview", batches: "My Batches", live_classes: "Live Classes",
-  lectures: "Recorded Lectures", assignments: "Assignments", doubts: "Doubt Forum",
+  lectures: "Recorded Lectures", assignments: "Assignments", tests: "Tests", doubts: "Doubt Forum",
   materials: "Study Materials", notifications: "Announcements", attendance: "Attendance",
   fees: "My Payments", profile: "Profile & Settings",
 };
@@ -1053,7 +1054,7 @@ export default function DashboardPage() {
     <div className="flex h-full flex-col gap-1 overflow-y-auto p-3">
       <div className="mb-2 flex items-center gap-2 px-1"><img src="/logo.jpg" alt="U++ Academy" className="h-10 w-10 rounded-xl object-cover" /><span className="font-extrabold">U++ Academy</span></div>
       <div className="mb-2 rounded-2xl bg-brand-tint p-3"><b className="block">{profile.full_name}</b><span className="text-xs font-bold capitalize text-brand-dark">{profile.role}{profile.class_label ? ` · ${profile.class_label}` : ""}{profile.board ? ` · ${profile.board}` : ""}</span><span className="mt-1 block text-xs text-slate-500">{profile.email}</span>{childProfile && <span className="mt-1 block text-xs font-bold text-brand-dark">Viewing child: {effectiveName}</span>}</div>
-      <p className="px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{profile.role === "student" ? "My learning · 11 sections" : profile.role === "admin" ? "All features · 15 sections" : `${profile.role} · ${allowedSections(profile.role).length} sections`}</p>
+      <p className="px-2 text-[11px] font-extrabold uppercase tracking-widest text-slate-400">{profile.role === "student" ? `My learning · ${allowedSections(profile.role).length} sections` : profile.role === "admin" ? "All features · 15 sections" : `${profile.role} · ${allowedSections(profile.role).length} sections`}</p>
       {SECTION_GROUPS.map((group) => {
         const keys = group.keys.filter(k => allowedSections(profile.role).includes(k));
         if (!keys.length) return null;
@@ -1289,7 +1290,7 @@ export default function DashboardPage() {
       </div>
       {drawer && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setDrawer(false)} /><aside className="absolute left-0 top-0 h-full w-80 max-w-[85vw] bg-white shadow-xl">{sidebar}</aside><button onClick={()=>setDrawer(false)} className="app-press absolute top-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-lg" style={{ left: "min(21rem, calc(85vw + 0.75rem))" }} aria-label="Close menu"><X className="h-5 w-5" /></button></div>}
       <nav className="app-tabbar fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-white/95 px-2 pt-1.5 backdrop-blur md:hidden" aria-label="Primary">
-        {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","lectures","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="doubts" ? "Doubt" : "Tasks"; const active = section===k; const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} aria-current={active ? "page" : undefined} className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${active ? "bg-brand text-white" : "text-slate-400"}`}><Ico className="h-5 w-5" /></span><span className={`max-w-full truncate ${active ? "text-brand-dark" : "text-slate-400"}`}>{label}</span></button>; })}
+        {(profile.role === "student" || profile.role === "parent" ? ["overview","batches","tests","doubts"] : ["overview","batches","lectures","assignments"]).map(k => { const label = k==="overview" ? "Home" : k==="batches" ? (profile.role === "student" ? "My Batches" : "Batches") : k==="lectures" ? "Learn" : k==="tests" ? "Tests" : k==="doubts" ? "Doubt" : "Tasks"; const active = section===k; const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} aria-current={active ? "page" : undefined} className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${active ? "bg-brand text-white" : "text-slate-400"}`}><Ico className="h-5 w-5" /></span><span className={`max-w-full truncate ${active ? "text-brand-dark" : "text-slate-400"}`}>{label}</span></button>; })}
         <button onClick={()=>setMoreOpen(true)} aria-expanded={moreOpen} aria-label="More sections" className="app-press flex min-h-[56px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-2xl py-1 text-[10px] font-bold"><span className={`flex h-7 items-center justify-center rounded-full px-3 transition-colors ${moreOpen ? "bg-brand text-white" : "text-slate-400"}`}><MoreHorizontal className="h-5 w-5" /></span><span className={moreOpen ? "text-brand-dark" : "text-slate-400"}>More</span></button>
       </nav>
       {moreOpen && <div className="fixed inset-0 z-50 md:hidden"><div className="absolute inset-0 bg-black/40" onClick={()=>setMoreOpen(false)} /><div className="app-sheet absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-3xl bg-white p-4"><div className="mb-3 flex items-center justify-between"><b>All sections</b><button onClick={()=>setMoreOpen(false)} className="app-press flex h-10 w-10 items-center justify-center rounded-xl border" aria-label="Close menu"><X className="h-5 w-5" /></button></div><div className="grid grid-cols-3 gap-2">{allowedSections(profile.role).map((k)=>{ const Ico = SECTION_ICONS[k] || LayoutGrid; return <button key={k} onClick={()=>openSection(k)} className="app-press flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-2xl border p-3 text-center text-xs font-bold"><Ico className="h-5 w-5 text-brand" />{sectionLabel(k)}{!isEnabled(k) && <span className="text-[10px] text-accent-ink">Off</span>}</button>; })}</div><button onClick={logout} className="app-press mt-4 min-h-[48px] w-full rounded-xl border py-3 font-bold text-red-700">Log out</button></div></div>}
@@ -1692,33 +1693,7 @@ export default function DashboardPage() {
       </div>
     );
     if (section === "tests") return (
-      <div>
-        {isStaff && <form onSubmit={createRow} className="card mt-3"><h3 className="font-extrabold">Create test</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {sel("Batch", form.batch_id || "", v => setForm({ ...form, batch_id: v }), (profile?.role === "teacher" ? batches.filter(b => myBatchIds.includes(s(b, "id"))) : batches).map(b => ({ v: s(b, "id"), l: s(b, "name") })))}
-          <div><label className="label">Test title</label><input required className="input" value={form.title || ""} onChange={e => setForm({ ...form, title: e.target.value })} /></div>
-          <div><label className="label">Subject</label><input className="input" value={form.subject || ""} onChange={e => setForm({ ...form, subject: e.target.value })} /></div>
-          <div><label className="label">Total marks</label><input type="number" className="input" value={form.total_marks || ""} onChange={e => setForm({ ...form, total_marks: e.target.value })} /></div>
-          <div><label className="label">Test date</label><input type="date" className="input" value={form.test_date || ""} onChange={e => setForm({ ...form, test_date: e.target.value })} /></div>
-        </div><button className="btn-brand mt-3 !py-2.5 text-sm">Save test</button></form>}
-        <div className="mt-4 space-y-2">
-          {(data.tests || []).filter(t => canSeeBatch(s(t, "batch_id"))).length === 0 && empty("No tests yet.")}
-          {(data.tests || []).filter(t => canSeeBatch(s(t, "batch_id"))).map(t => {
-            const tid = s(t, "id");
-            const results = (data.test_results || []).filter(r => s(r, "test_id") === tid);
-            const avg = results.length ? (results.reduce((a, r) => a + n(r, "marks"), 0) / results.length).toFixed(1) : "—";
-            const mine = results.find(r => s(r, "student_id") === effectiveId);
-            const visible = isStaff ? results : mine ? [mine] : [];
-            return <div key={tid} className="card !p-4"><b className="text-sm">{s(t, "title")}</b><p className="text-xs text-slate-500">{batchName(s(t, "batch_id"))} · {s(t, "subject")} · Total {String(t.total_marks ?? "")} · {s(t, "test_date")} · Class average: {avg}</p>
-              {isStaff && <div className="mt-3 rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold">Enter marks per student</p><div className="mt-2 grid gap-2 sm:grid-cols-4">
-                {sel("Student", testStu[tid] || "", v => setTestStu({ ...testStu, [tid]: v }), (profile?.role === "teacher" ? students.filter(x => teacherStudentIds.has(s(x, "id"))) : students).map(x => ({ v: s(x, "id"), l: s(x, "full_name") })))}
-                <div><label className="label">Marks</label><input type="number" className="input" value={testMarks[tid] || ""} onChange={e => setTestMarks({ ...testMarks, [tid]: e.target.value })} /></div>
-                <div><label className="label">Remarks</label><input className="input" value={testRem[tid] || ""} onChange={e => setTestRem({ ...testRem, [tid]: e.target.value })} /></div>
-                <div className="flex items-end"><button onClick={() => enterMarks(tid)} className="btn-brand !py-2.5 text-xs">Save marks</button></div></div></div>}
-              <ul className="mt-2 space-y-1 text-sm">{visible.length === 0 ? <li className="text-slate-500">{isStaff ? "No results entered yet." : "Your result is not entered yet."}</li> : visible.map(r => <li key={s(r, "id")} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2"><span>{nameOf(s(r, "student_id"))} — <b>{String(r.marks ?? "—")} / {String(t.total_marks ?? "")}</b>{s(r, "remarks") ? ` · ${s(r, "remarks")}` : ""}</span>{Number(r.marks || 0) / Number(t.total_marks || 1) * 100 >= 40 && <button onClick={() => setCert({ student: nameOf(s(r, "student_id")), test: s(t, "title"), marks: Number(r.marks || 0), total: Number(t.total_marks || 0), date: s(t, "test_date") })} className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-extrabold">🏆 Certificate</button>}</li>)}</ul>
-            </div>;
-          })}
-        </div>
-      </div>
+      <TestModule supabase={supabase} profile={profile as unknown as Record<string, unknown>} data={data} effectiveId={effectiveId} isStaff={isStaff} canSeeBatch={canSeeBatch} myBatchIds={myBatchIds} teacherStudentIds={teacherStudentIds} students={students} nameOf={nameOf} batchName={batchName} loadAll={loadAll} setMsg={setMsg} form={form} setForm={setForm} createRow={createRow} setCert={setCert} />
     );
     if (section === "live_classes") return (
       <div>

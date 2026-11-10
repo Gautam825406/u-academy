@@ -157,7 +157,84 @@ create table if not exists public.tests (
   batch_id uuid references public.batches(id) on delete set null,
   title text not null, subject text, total_marks numeric default 50, test_date date,
   created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now(),
+  description text, category text, difficulty text, duration_minutes int,
+  start_at timestamptz, end_at timestamptz,
+  max_attempts int not null default 1,
+  randomize_questions boolean not null default false,
+  randomize_options boolean not null default false,
+  allow_revisit boolean not null default true,
+  show_results text not null default 'immediate',
+  show_answers boolean not null default true,
+  show_explanations boolean not null default true,
+  passing_marks numeric, instructions text,
+  status text not null default 'draft',
+  thumbnail_url text, published_at timestamptz,
+  results_published boolean not null default false
+);
+-- Reusable Question Bank (teachers save MCQs here; questions are COPIED
+-- into test_questions when a test is created, so later bank edits never
+-- invalidate submitted attempts).
+create table if not exists public.question_bank (
+  id uuid primary key default gen_random_uuid(),
+  teacher_id uuid references public.profiles(id) on delete set null,
+  created_by uuid references public.profiles(id) on delete set null,
+  batch_id uuid references public.batches(id) on delete set null,
+  subject text, topic text,
+  question_type text not null default 'single',
+  question_text text not null,
+  options jsonb not null default '[]'::jsonb,
+  correct_answers jsonb not null default '[]'::jsonb,
+  explanation text,
+  marks numeric not null default 1,
+  negative_marks numeric not null default 0,
+  difficulty text not null default 'Medium',
+  tags text[] not null default '{}',
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create table if not exists public.test_questions (
+  id uuid primary key default gen_random_uuid(),
+  test_id uuid not null references public.tests(id) on delete cascade,
+  question_bank_id uuid references public.question_bank(id) on delete set null,
+  question_text text not null,
+  question_type text not null default 'single',
+  options jsonb not null default '[]'::jsonb,
+  correct_answers jsonb not null default '[]'::jsonb,
+  explanation text,
+  marks numeric not null default 1,
+  negative_marks numeric not null default 0,
+  difficulty text not null default 'Medium',
+  subject text, topic text,
+  sort_order int not null default 0,
   created_at timestamptz not null default now()
+);
+create table if not exists public.test_attempts (
+  id uuid primary key default gen_random_uuid(),
+  test_id uuid not null references public.tests(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  status text not null default 'in_progress',
+  started_at timestamptz not null default now(),
+  submitted_at timestamptz,
+  expires_at timestamptz,
+  attempt_number int not null default 1,
+  question_order jsonb not null default '[]'::jsonb,
+  option_orders jsonb not null default '{}'::jsonb,
+  score numeric, max_marks numeric, percentage numeric, passed boolean,
+  time_taken_seconds int,
+  created_at timestamptz not null default now(),
+  unique (test_id, student_id, attempt_number)
+);
+create table if not exists public.student_answers (
+  id uuid primary key default gen_random_uuid(),
+  attempt_id uuid not null references public.test_attempts(id) on delete cascade,
+  question_id uuid not null references public.test_questions(id) on delete cascade,
+  selected jsonb not null default '[]'::jsonb,
+  is_correct boolean,
+  marks_awarded numeric,
+  answered_at timestamptz not null default now(),
+  unique (attempt_id, question_id)
 );
 create table if not exists public.test_results (
   id uuid primary key default gen_random_uuid(),
@@ -332,7 +409,8 @@ begin
     'tests','test_results','attendance','fees','live_classes','doubts',
     'announcements','notifications','role_permissions','payments',
     'courses','coupons','timetable','course_enrollments','batch_plans','subscriptions',
-    'lecture_progress','lecture_notes']) loop
+    'lecture_progress','lecture_notes',
+    'question_bank','test_questions','test_attempts','student_answers']) loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy "auth read %I" on public.%I for select using (auth.role() = ''authenticated'')', t, t);
     execute format('create policy "auth write %I" on public.%I for insert with check (auth.role() = ''authenticated'')', t, t);
@@ -364,6 +442,14 @@ create policy "auth update onboarding_invites" on public.onboarding_invites for 
 -- ---------- Indexes ----------
 create index if not exists idx_enrollments_batch on public.enrollments(batch_id);
 create index if not exists idx_enrollments_student on public.enrollments(student_id);
+create index if not exists idx_question_bank_teacher on public.question_bank(teacher_id);
+create index if not exists idx_question_bank_subject on public.question_bank(subject);
+create index if not exists idx_question_bank_batch on public.question_bank(batch_id);
+create index if not exists idx_test_questions_test on public.test_questions(test_id);
+create index if not exists idx_test_attempts_test on public.test_attempts(test_id);
+create index if not exists idx_test_attempts_student on public.test_attempts(student_id);
+create index if not exists idx_student_answers_attempt on public.student_answers(attempt_id);
+create index if not exists idx_student_answers_question on public.student_answers(question_id);
 create index if not exists idx_lectures_batch on public.lectures(batch_id);
 create index if not exists idx_lecture_progress_student on public.lecture_progress(student_id);
 create index if not exists idx_lecture_progress_lecture on public.lecture_progress(lecture_id);
